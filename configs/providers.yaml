@@ -1,0 +1,110 @@
+# Providers the model client can call. Loaded by lab/models/providers.py.
+#
+# Every limit and price records where it came from and when it was checked. Free-tier limits
+# and catalogs change without notice: re-check before each real run and update `checked`.
+#
+# Prices are the public *paid* on-demand prices in USD per million tokens. We pay nothing on the
+# free tier; the prices only give results a real cost axis (BRIEF §8).
+#
+# `limits` are per model, never shared across models. null means "no limit published / not
+# applicable".
+#   rpm = requests per minute, rpd = requests per day,
+#   tpm = tokens per minute,   tpd = tokens per day.
+#
+# `sampling` (optional) is the temperature and reasoning effort every run of that model uses.
+# Each run record stores the values it actually used.
+
+providers:
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    base_url_source: https://console.groq.com/docs/openai  # checked 2026-10-25
+    api_key_env: GROQ_API_KEY
+    models:
+      # llama-3.3-70b-versatile and llama-3.1-8b-instant (the models in PLAN_M1 §5) were shut
+      # down for free and developer tiers on 2026-08-16; Groq recommends the gpt-oss models
+      # below as replacements. Source: https://console.groq.com/docs/deprecations (2026-10-25).
+      # See DECISIONS.md D16.
+      openai/gpt-oss-120b:
+        tool_calling: true
+        price:
+          input_per_mtok: 0.15
+          output_per_mtok: 0.60
+          source: https://console.groq.com/docs/model/openai/gpt-oss-120b
+          checked: 2026-10-25
+        sampling: &gpt_oss_sampling
+          # Groq's recommendation for reasoning models: temperature 0.5-0.7, default 0.6
+          # (https://console.groq.com/docs/reasoning). reasoning_effort is our choice (D19);
+          # Groq documents low/medium/high for gpt-oss and states no default.
+          temperature: 0.6
+          reasoning_effort: medium
+          source: https://console.groq.com/docs/reasoning
+          checked: 2026-10-25
+        limits: &gpt_oss_limits
+          rpm: 30
+          rpd: 1000
+          tpm: 8000
+          tpd: 200000
+          # Read by Bhuvan from the account's own limits page (D20).
+          source: https://console.groq.com/settings/limits
+          checked: 2026-10-25
+          verified_for_free_plan: true
+      openai/gpt-oss-20b:
+        tool_calling: true
+        price:
+          input_per_mtok: 0.075
+          output_per_mtok: 0.30
+          source: https://console.groq.com/docs/model/openai/gpt-oss-20b
+          checked: 2026-10-25
+        sampling: *gpt_oss_sampling
+        limits: *gpt_oss_limits
+
+      # Prompt-injection classifiers, for the detection defenses (milestone 4). Not chat agents:
+      # no tool calling, 512-token context. Limits are per model, not shared.
+      meta-llama/llama-prompt-guard-2-22m:
+        tool_calling: false
+        price:
+          input_per_mtok: 0.03
+          output_per_mtok: 0.03
+          source: https://console.groq.com/docs/model/meta-llama/llama-prompt-guard-2-22m
+          checked: 2026-10-25
+        limits: &prompt_guard_limits
+          rpm: 30
+          rpd: 14400
+          tpm: 15000
+          tpd: 500000
+          source: https://console.groq.com/settings/limits
+          checked: 2026-10-25
+          verified_for_free_plan: true
+      meta-llama/llama-prompt-guard-2-86m:
+        tool_calling: false
+        price:
+          input_per_mtok: 0.04
+          output_per_mtok: 0.04
+          source: https://console.groq.com/docs/model/meta-llama/llama-prompt-guard-2-86m
+          checked: 2026-10-25
+        limits: *prompt_guard_limits
+
+  ollama:
+    # Local server. The key is "required but ignored" by Ollama, so none is read from the
+    # environment and the client sends a fixed placeholder.
+    base_url: http://localhost:11434/v1
+    base_url_source: https://docs.ollama.com/api/openai-compatibility  # checked 2026-10-25
+    api_key_env: null
+    models:
+      # Ollama tags are mutable (a re-pull can change the weights). Record the digest from
+      # `ollama list` next to any real result. Ollama is for the optional local smoke run only.
+      qwen3:8b:
+        tool_calling: true
+        price:
+          input_per_mtok: 0.0
+          output_per_mtok: 0.0
+          source: local model, no per-token price
+          checked: 2026-10-25
+        limits:
+          rpm: null
+          rpd: null
+          tpm: null
+          tpd: null
+          source: local model, hardware-bound
+          checked: 2026-10-25
+          verified_for_free_plan: true

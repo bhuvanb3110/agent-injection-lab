@@ -1,0 +1,52 @@
+[project]
+name = "lab"
+version = "0.1.0"
+description = "Agent Injection Lab: measuring prompt-injection risk across multi-agent topologies and defenses."
+readme = "docs/BRIEF.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Pinned exactly: task definitions and scoring change between releases (DECISIONS.md D3).
+    "agentdojo==0.1.35",
+    "httpx2>=2.16,<3",
+    "openai>=3.37,<4",
+    "pydantic>=2",
+    "python-dotenv>=1.2.4,<2",
+    "pyyaml>=6.0.3,<7",
+]
+
+[project.scripts]
+lab = "lab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lab"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[[tool.mypy.overrides]]
+# agentdojo ships no py.typed marker; read its inline annotations anyway.
+module = ["agentdojo", "agentdojo.*"]
+follow_untyped_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+    "types-pyyaml>=6.0",
+]

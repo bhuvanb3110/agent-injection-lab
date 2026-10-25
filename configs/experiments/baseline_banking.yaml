@@ -1,0 +1,20 @@
+# Milestone 1 baseline: benign utility of T1 on all 16 Banking tasks (v1.2.2), both Groq models.
+# 16 tasks x 2 models x 1 repeat = 32 runs. Resumable: rerun the same command after a daily cap.
+#   uv run lab run configs/experiments/baseline_banking.yaml
+#   uv run lab report baseline_banking
+#
+# Sampling (temperature 0.6, reasoning_effort medium) comes from configs/providers.yaml (D19).
+# One repeat for now (D36); repeats are a later decision.
+name: baseline_banking
+description: T1 benign utility on Banking v1.2.2, gpt-oss-120b vs gpt-oss-20b on Groq.
+suite: banking
+topology: t1
+user_tasks: all
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: 1
+seed: 20261025
+max_tokens: 2048
