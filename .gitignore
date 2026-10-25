@@ -19,3 +19,4 @@ cache/
 
 # AgentDojo's TraceLogger default output, in case it is ever triggered
 runs/
+.vscode/
