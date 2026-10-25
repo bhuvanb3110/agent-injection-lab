@@ -140,6 +140,22 @@ def test_repeat_index_reaches_the_request() -> None:
     assert model.requests[0].repeat_idx == 2
 
 
+def test_seed_reaches_every_request() -> None:
+    model = FakeModel([call("read_file", READ_BILL), answer("hi")])
+    llm = LabLLM(model, provider="fake", model_id="scripted", seed=1001)
+    suite = load_banking_suite()
+    pipeline = AgentPipeline(
+        [
+            SystemMessage(SYSTEM_PROMPT),
+            InitQuery(),
+            llm,
+            ToolsExecutionLoop([LabToolsExecutor(), llm]),
+        ]
+    )
+    run_case(suite, pipeline, suite.get_user_task_by_id(PAY_BILL))
+    assert [r.seed for r in model.requests] == [1001, 1001]
+
+
 def test_reasoning_is_recorded_but_not_shown_or_scored() -> None:
     reply = answer("I can't do that.").model_copy(update={"reasoning": "secret plan 98.70"})
     result = run(FakeModel([reply]))

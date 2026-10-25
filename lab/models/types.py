@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentdojo.types import ChatMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from lab.models.providers import ReasoningEffort
@@ -27,6 +28,7 @@ class ModelRequest(BaseModel):
     temperature: float
     max_tokens: int | None = None  # None: not sent, the provider default applies
     reasoning_effort: ReasoningEffort | None = None  # None: not sent (D19)
+    seed: int | None = None  # None: not sent, the provider picks its own (D27)
     # Not sent. Separates repeats in the cache so repeat 2 is a fresh sample, not a replay of
     # repeat 1, which would hide run-to-run variance (D13).
     repeat_idx: int = 0
@@ -100,6 +102,10 @@ class RunContext:
 
     repeat_idx: int = 0
     calls: list[CallRecord] = field(default_factory=list)
+    # The transcript as of the latest model call, kept up to date by LabLLM. When a run ends in
+    # ModelError the pipeline raises before returning its messages; this is what gets stored
+    # instead (D30).
+    messages: list[ChatMessage] = field(default_factory=list)
 
     @property
     def malformed_tool_calls(self) -> int:

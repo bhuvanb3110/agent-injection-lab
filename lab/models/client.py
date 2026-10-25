@@ -83,6 +83,9 @@ class OpenAICompatClient:
             kwargs["max_tokens"] = request.max_tokens
         if request.reasoning_effort is not None:
             kwargs["reasoning_effort"] = request.reasoning_effort
+        if request.seed is not None:
+            # Groq and Ollama both accept it; Groq calls it "best effort" (D27).
+            kwargs["seed"] = request.seed
 
         start = time.perf_counter()
         try:

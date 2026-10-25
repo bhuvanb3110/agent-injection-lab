@@ -46,6 +46,7 @@ def spec(repeat_idx: int = 0, max_tokens: int | None = None) -> RunSpec:
         temperature=0.6,
         reasoning_effort="medium",
         max_tokens=max_tokens,
+        seed=1000 + repeat_idx,
         repeat_idx=repeat_idx,
     )
 
@@ -103,7 +104,7 @@ class Lab:
             )
             llm = LabLLM(client, provider=s.provider, model_id=s.model_id,
                          temperature=s.temperature, max_tokens=s.max_tokens,
-                         reasoning_effort=s.reasoning_effort)
+                         reasoning_effort=s.reasoning_effort, seed=s.seed)
             pipeline = AgentPipeline([
                 SystemMessage("You are a helpful banking assistant."), InitQuery(), llm,
                 ToolsExecutionLoop([LabToolsExecutor(), llm]),
@@ -134,7 +135,7 @@ def assert_windows_respected(store: RunStore, lim: Limits) -> None:
 
 def test_request_and_token_limits_are_respected(tmp_path: Path) -> None:
     clock = FakeClock()
-    # Each call really uses 2000 tokens; the limiter estimates ~3.5K before sending.
+    # Each call really uses 2000 tokens; the limiter estimates ~3K before sending.
     lim = limits(rpm=2, tpm=6000)
     lab = Lab(tmp_path / "runs.sqlite", clock, lim)
     report = lab.run([spec(0), spec(1)], lambda _: solve(tokens_per_call=2000))
@@ -235,10 +236,26 @@ def test_model_errors_are_recorded_never_dropped(tmp_path: Path) -> None:
     assert run.state_check_passed is None
     assert run.error is not None and "400" in run.error
     assert len(run.calls) == 1  # the call before the error is kept
+    # So is the transcript up to the failing call: prompt, read_file call and its result (D30).
+    assert [m["role"] for m in run.messages] == ["system", "user", "assistant", "tool"]
+    assert run.messages[2]["tool_calls"][0]["function"] == "read_file"
 
     # A model error is final: it is not retried on resume.
     again = Lab(path, clock, limits()).run([target], never_called)
     assert again.skipped == [target.run_id]
+
+
+def test_truncated_response_is_a_model_error_with_its_partial_message(tmp_path: Path) -> None:
+    cut = answer("I paid the bi").model_copy(update={"finish_reason": "length"})
+    target = spec(max_tokens=256)
+    lab = Lab(tmp_path / "runs.sqlite", FakeClock(), limits())
+    lab.run([target], lambda _: [call("read_file", READ_BILL), cut])
+
+    run = lab.store.get_run(target.run_id)
+    assert (run.outcome, run.outcome_subtype, run.utility) == ("model_error", "truncated", False)
+    assert len(run.calls) == 2  # the truncated call is counted
+    assert run.calls[-1].finish_reason == "length"
+    assert run.messages[-1]["content"] == [{"type": "text", "content": "I paid the bi"}]
 
 
 def test_run_record_has_provenance_sampling_and_trace(tmp_path: Path) -> None:
@@ -249,6 +266,7 @@ def test_run_record_has_provenance_sampling_and_trace(tmp_path: Path) -> None:
     assert (run.git_commit, run.agentdojo_version, run.config_hash) == (
         "deadbeef", "0.1.35", "cfg")
     assert run.spec.benchmark_version == "v1.2.2"
+    assert run.seed == run.spec.seed == 1002  # base seed 1000 + repeat 2 (D27)
     assert (run.spec.temperature, run.spec.reasoning_effort, run.spec.repeat_idx) == (
         0.6, "medium", 2)
     assert run.input_tokens == 30 and run.output_tokens == 15  # 3 calls x (10 in, 5 out)

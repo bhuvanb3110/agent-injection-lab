@@ -32,7 +32,7 @@ class RunRecord(BaseModel):
     config_hash: str
     git_commit: str
     agentdojo_version: str
-    seed: int | None  # None: no seed is sent; Groq picks its own per request
+    seed: int | None  # the seed sent on every call of the run (D27); None: none was sent
     outcome: str  # solved, not_solved, max_iterations, no_final_answer, model_error
     outcome_subtype: str | None  # for model_error: http_400, no_choices, ... (D21)
     utility: bool  # True only for solved; the headline number

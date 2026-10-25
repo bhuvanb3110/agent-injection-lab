@@ -141,7 +141,7 @@ class Scheduler:
             "config_hash": self.provenance.config_hash,
             "git_commit": self.provenance.git_commit,
             "agentdojo_version": self.provenance.agentdojo_version,
-            "seed": None,
+            "seed": spec.seed,
             "calls": list(ctx.calls),
             "malformed_tool_calls": ctx.malformed_tool_calls,
             "started_at": _iso(started),
@@ -164,11 +164,11 @@ class Scheduler:
             outcome=Outcome.MODEL_ERROR.value,
             outcome_subtype=model_error.subtype,
             utility=False,
-            # The pipeline raised before returning, so there is no final state to check and
-            # no transcript to keep; the calls made so far are kept above.
+            # The pipeline raised before returning, so there is no final state to check. The
+            # transcript up to the failing call comes from the context LabLLM kept (D30).
             state_check_passed=None,
             error=str(model_error),
-            messages=[],
+            messages=[_json_safe(m) for m in ctx.messages],
         )
 
 

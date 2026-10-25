@@ -9,7 +9,9 @@ differs on purpose (DECISIONS.md D1, D14, D15):
   `MalformedToolCall`, `LabToolsExecutor` answers it with a tool error the model can recover
   from, and the run's count goes up (D6).
 
-Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17).
+Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17), and a
+response cut off by max_tokens (finish_reason "length") ends the run as ModelError "truncated"
+(D29).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from agentdojo.types import (
     text_content_block_from_string,
 )
 
+from lab.errors import ModelError
 from lab.models.cache import request_key
 from lab.models.client import ChatClient
 from lab.models.providers import ReasoningEffort
@@ -67,6 +70,7 @@ class LabLLM(BasePipelineElement):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         reasoning_effort: ReasoningEffort | None = None,
+        seed: int | None = None,
     ) -> None:
         self.client = client
         self.provider = provider
@@ -74,6 +78,7 @@ class LabLLM(BasePipelineElement):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
+        self.seed = seed
         self.name = f"{provider}/{model_id}"
 
     def query(
@@ -99,8 +104,11 @@ class LabLLM(BasePipelineElement):
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
+            seed=self.seed,
             repeat_idx=ctx.repeat_idx,
         )
+        # Keep the transcript in the context, so a run that ends in ModelError still has one.
+        ctx.messages = list(messages)
         response = self.client.complete(request)
         assistant = response_to_assistant_message(response)
         malformed = sum(isinstance(c, MalformedToolCall) for c in assistant["tool_calls"] or [])
@@ -122,7 +130,17 @@ class LabLLM(BasePipelineElement):
                 reasoning=response.reasoning,
             )
         )
-        return query, runtime, env, [*messages, assistant], extra_args
+        ctx.messages = [*messages, assistant]
+        if response.finish_reason == "length":
+            # Cut off by max_tokens: the answer or tool call may be incomplete, so the run ends
+            # here as a model error rather than acting on half a message (D29). The call above
+            # is already counted and the partial message is in ctx.messages.
+            raise ModelError(
+                f"{self.name}: response cut off at max_tokens={self.max_tokens}",
+                provider=self.provider,
+                subtype="truncated",
+            )
+        return query, runtime, env, ctx.messages, extra_args
 
 
 class LabToolsExecutor(ToolsExecutor):

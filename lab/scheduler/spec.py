@@ -31,6 +31,7 @@ class RunSpec(BaseModel):
     temperature: float
     reasoning_effort: ReasoningEffort | None
     max_tokens: int | None
+    seed: int | None  # base seed + repeat_idx (D27); None: no seed is sent
     repeat_idx: int
 
     @property

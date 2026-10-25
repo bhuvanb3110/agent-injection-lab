@@ -21,6 +21,7 @@ SPEC = RunSpec(
     temperature=0.6,
     reasoning_effort="medium",
     max_tokens=None,
+    seed=1002,
     repeat_idx=2,
 )
 
@@ -50,7 +51,7 @@ def record(calls: list[CallRecord]) -> RunRecord:
         config_hash="cfg",
         git_commit="deadbeef",
         agentdojo_version="0.1.35",
-        seed=None,
+        seed=SPEC.seed,
         outcome="solved",
         outcome_subtype=None,
         utility=True,
@@ -125,6 +126,7 @@ def test_run_id_depends_on_every_spec_field() -> None:
             ("temperature", 0.5),
             ("reasoning_effort", "low"),
             ("max_tokens", 100),
+            ("seed", 7),
             ("repeat_idx", 0),
         ]
     ]

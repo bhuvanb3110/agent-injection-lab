@@ -216,6 +216,16 @@ def test_sends_reasoning_effort_only_when_set() -> None:
     assert "reasoning_effort" not in recorder.body(1)  # Ollama doesn't take it
 
 
+def test_sends_seed_only_when_set() -> None:
+    client, recorder = make_client(
+        lambda _: httpx2.Response(200, json=completion({"role": "assistant", "content": "hi"}))
+    )
+    client.complete(request(seed=1002))
+    client.complete(request())
+    assert recorder.body(0)["seed"] == 1002
+    assert "seed" not in recorder.body(1)
+
+
 def test_reasoning_tokens_are_part_of_output_tokens_and_cost() -> None:
     message = {"role": "assistant", "content": "done", "reasoning": "think"}
     client, _ = make_client(
