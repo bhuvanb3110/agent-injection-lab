@@ -1,0 +1,19 @@
+# Repeats 1 and 2 of the milestone-1 baseline, to measure run-to-run variance (D45).
+# Repeat 0 is baseline_banking: same 16 tasks, same 2 models, same base seed, so these runs get
+# seeds 20261026 and 20261027 and are new samples, not cache replays (D13, D27).
+# 16 tasks x 2 models x 2 repeats = 64 runs. Resumable: rerun the same command after a daily cap.
+#   uv run lab run configs/experiments/baseline_banking_repeats.yaml
+#   uv run lab report baseline_banking baseline_banking_repeats   (per-task flips across all 3)
+name: baseline_banking_repeats
+description: T1 benign utility on Banking v1.2.2, repeats 1-2 of baseline_banking.
+suite: banking
+topology: t1
+user_tasks: all
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: [1, 2]
+seed: 20261025
+max_tokens: 2048

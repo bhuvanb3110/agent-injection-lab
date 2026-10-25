@@ -109,6 +109,7 @@ class GroupMetrics:
     calls_without_reasoning_tokens: int
     reasoning_tokens_range: tuple[int, int] | None
     cost_usd: float | None  # at public paid prices
+    failure_labels: dict[str, int]  # hand labels of runs not solved; "unlabeled" for the rest
     call_latency: Latency  # per model call, cache hits excluded
     task_latency: Latency  # per run: sum of its call latencies, runs with no cache hit only
     seeds: list[int] = field(default_factory=list)
@@ -149,6 +150,7 @@ def _group(
         elif run.outcome in MODEL_ERROR_OUTCOMES:
             model_errors[run.outcome] += 1
 
+    failure_labels = Counter(run.failure_label or "unlabeled" for run in runs if not run.utility)
     discriminating = [run for run in runs if run.spec.user_task_id not in do_nothing_passes]
     calls = [c for run in runs for c in run.calls]
     uncached_runs = [run for run in runs if run.calls and not any(c.cached for c in run.calls)]
@@ -175,6 +177,7 @@ def _group(
         calls_without_reasoning_tokens=sum(c.reasoning_tokens is None for c in calls),
         reasoning_tokens_range=_reasoning_range(calls),
         cost_usd=_total_float(run.cost_usd for run in runs),
+        failure_labels=dict(sorted(failure_labels.items())),
         call_latency=Latency.of([c.latency_s for c in calls if not c.cached]),
         task_latency=Latency.of([sum(c.latency_s for c in run.calls) for run in uncached_runs]),
         seeds=sorted({run.seed for run in runs if run.seed is not None}),
@@ -184,6 +187,80 @@ def _group(
         first_run_at=started[0] if started else None,
         last_run_at=started[-1] if started else None,
     )
+
+
+@dataclass(frozen=True)
+class TaskRepeats:
+    """One task's outcomes over its repeats, for one model (D45)."""
+
+    user_task_id: str
+    utilities: list[tuple[int, bool]]  # (repeat_idx, solved), by repeat index
+
+    @property
+    def solved(self) -> int:
+        return sum(u for _, u in self.utilities)
+
+    @property
+    def flipped(self) -> bool:
+        return 0 < self.solved < len(self.utilities)
+
+    @property
+    def flip_rate(self) -> float | None:
+        """Share of pairs of repeats whose outcomes differ; None with fewer than 2 repeats.
+
+        0 means every repeat agreed. With 3 repeats, one odd one out gives 2/3.
+        """
+        n = len(self.utilities)
+        if n < 2:
+            return None
+        return self.solved * (n - self.solved) / (n * (n - 1) / 2)
+
+
+@dataclass(frozen=True)
+class FlipMetrics:
+    provider: str
+    model_id: str
+    topology: str
+    tasks: list[TaskRepeats]  # in task order
+
+    @property
+    def repeated(self) -> list[TaskRepeats]:
+        return [t for t in self.tasks if len(t.utilities) >= 2]
+
+    @property
+    def tasks_flipped(self) -> Proportion:
+        """Tasks whose outcome was not the same on every repeat, of tasks run at least twice."""
+        return Proportion(successes=sum(t.flipped for t in self.repeated), n=len(self.repeated))
+
+
+def compute_flips(records: Iterable[RunRecord]) -> list[FlipMetrics]:
+    """Per (provider, model, topology), each task's outcome on every repeat stored.
+
+    Records may come from several experiments (e.g. a baseline and its added repeats): runs are
+    matched by task and model, and each keeps its own repeat index.
+    """
+    groups: dict[tuple[str, str, str], dict[str, list[tuple[int, bool]]]] = {}
+    for r in records:
+        key = (r.spec.provider, r.spec.model_id, r.spec.topology)
+        groups.setdefault(key, {}).setdefault(r.spec.user_task_id, []).append(
+            (r.spec.repeat_idx, r.utility)
+        )
+    return [
+        FlipMetrics(
+            provider=provider,
+            model_id=model_id,
+            topology=topology,
+            tasks=[
+                TaskRepeats(task, sorted(utilities))
+                for task, utilities in sorted(tasks.items(), key=lambda kv: _task_number(kv[0]))
+            ],
+        )
+        for (provider, model_id, topology), tasks in sorted(groups.items())
+    ]
+
+
+def _task_number(task_id: str) -> int:
+    return int(task_id.rsplit("_", 1)[1])
 
 
 def _reasoning_range(calls: Sequence[CallRecord]) -> tuple[int, int] | None:

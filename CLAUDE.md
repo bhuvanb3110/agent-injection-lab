@@ -34,8 +34,10 @@ Keep this list current as commands are added.
 - `uv run ruff check . && uv run mypy lab`
 - `uv run lab run configs/experiments/smoke.yaml` (FakeModels, no key needed)
 - `uv run lab run configs/experiments/baseline_banking.yaml` (real Groq calls; resumable: rerun the same command after a daily cap)
-- `uv run lab report <experiment>` (e.g. `smoke`, `baseline_banking`)
-- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config`
+- `uv run lab run configs/experiments/baseline_banking_repeats.yaml` (repeats 1–2 of the baseline; real Groq calls; resumable)
+- `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
+- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` takes `--store`
 
 ## Handoff summary
 

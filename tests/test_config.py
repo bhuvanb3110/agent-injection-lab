@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from lab.config import ExperimentConfig, expand, load_experiment
 from lab.models.providers import load_providers
+from lab.scheduler.spec import RunSpec
 
 EXPERIMENTS = Path(__file__).resolve().parents[1] / "configs" / "experiments"
 
@@ -23,6 +24,29 @@ def test_baseline_is_16_tasks_by_both_groq_models_once() -> None:
     assert {s.seed for s in specs} == {config.seed}
     # Models are interleaved, so a daily cap leaves both at the same point in the task list.
     assert [s.model_id for s in specs[:2]] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+
+def test_repeats_config_adds_repeats_1_and_2_to_the_baseline() -> None:
+    providers = load_providers()
+    baseline = expand(load_experiment(EXPERIMENTS / "baseline_banking.yaml"), providers)
+    repeats = expand(load_experiment(EXPERIMENTS / "baseline_banking_repeats.yaml"), providers)
+    assert len(repeats) == 64 and {s.repeat_idx for s in repeats} == {1, 2}
+    assert {s.seed for s in repeats} == {20261026, 20261027}  # new samples, not cache replays
+
+    def same_run(s: RunSpec) -> tuple[object, ...]:
+        return (s.user_task_id, s.provider, s.model_id, s.temperature, s.reasoning_effort,
+                s.max_tokens, s.topology, s.benchmark_version)
+
+    # Same tasks, models and settings as repeat 0, so the three repeats are comparable.
+    assert {same_run(s) for s in repeats} == {same_run(s) for s in baseline}
+
+
+def test_repeats_as_count_or_explicit_indices() -> None:
+    assert ExperimentConfig.model_validate(base() | {"repeats": 3}).repeat_indices() == [0, 1, 2]
+    assert ExperimentConfig.model_validate(base() | {"repeats": [2, 1]}).repeat_indices() == [2, 1]
+    for bad in (0, [], [1, 1], [-1]):
+        with pytest.raises(ValidationError):
+            ExperimentConfig.model_validate(base() | {"repeats": bad})
 
 
 def test_smoke_is_4_tasks_on_fake_models() -> None:

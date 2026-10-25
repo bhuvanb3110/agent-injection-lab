@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from lab.domains.agentdojo_bridge import BANKING_SUITE_NAME, BENCHMARK_VERSION, banking_task_ids
 from lab.models.fake import FAKE_PROVIDER, fake_model_info
@@ -39,9 +39,24 @@ class ExperimentConfig(_Strict):
     topology: Literal["t1"]  # T2-T5 come in milestone 2
     user_tasks: list[str] | Literal["all"]
     models: list[ModelRef] = Field(min_length=1)
-    repeats: int = Field(ge=1)
+    # A count n means repeat indices 0..n-1. A list names the indices, so a later experiment can
+    # add repeats to an earlier one without re-running the repeats it already has (D45).
+    repeats: int | list[int]
     seed: int  # base seed; a run's seed is seed + repeat_idx (D27)
     max_tokens: int = Field(ge=1)  # sent on every call (D28)
+
+    @field_validator("repeats")
+    @classmethod
+    def _check_repeats(cls, value: int | list[int]) -> int | list[int]:
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("repeats must be at least 1")
+        elif not value or len(set(value)) != len(value) or min(value) < 0:
+            raise ValueError("repeat indices must be a non-empty list of distinct indices >= 0")
+        return value
+
+    def repeat_indices(self) -> list[int]:
+        return list(range(self.repeats)) if isinstance(self.repeats, int) else list(self.repeats)
 
     def task_ids(self) -> list[str]:
         known = banking_task_ids()
@@ -83,7 +98,7 @@ def expand(config: ExperimentConfig, providers: dict[str, ProviderConfig]) -> li
     """
     infos = [(ref, model_info(ref, providers)) for ref in config.models]
     specs = []
-    for repeat_idx in range(config.repeats):
+    for repeat_idx in config.repeat_indices():
         for task_id in config.task_ids():
             for ref, info in infos:
                 if info.sampling is None:

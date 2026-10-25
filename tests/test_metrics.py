@@ -5,7 +5,7 @@ import pytest
 from lab.cli import report_text
 from lab.models.types import CallRecord
 from lab.scheduler.spec import RunSpec
-from lab.scoring.metrics import compute_metrics, percentile, wilson_interval
+from lab.scoring.metrics import compute_flips, compute_metrics, percentile, wilson_interval
 from lab.store import RunRecord
 
 
@@ -147,3 +147,53 @@ def test_discriminating_utility_and_do_nothing_floor() -> None:
     assert (g.benign_utility.successes, g.benign_utility.n) == (2, 4)
     assert (g.discriminating_utility.successes, g.discriminating_utility.n) == (1, 2)
     assert (g.do_nothing_floor.successes, g.do_nothing_floor.n) == (2, 4)
+
+
+def repeat(record: RunRecord, idx: int) -> RunRecord:
+    s = record.spec.model_copy(update={"repeat_idx": idx, "seed": 1000 + idx})
+    return record.model_copy(update={"spec": s, "run_id": s.run_id + record.outcome})
+
+
+def test_flips_across_repeats_pool_experiments_and_rate_each_task() -> None:
+    runs = [
+        # user_task_0 solved on all three repeats: no flip.
+        *(repeat(run("solved", [call(1.0)], task="user_task_0"), i) for i in range(3)),
+        # user_task_3: solved, not, solved -> flips; 2 of 3 repeat pairs differ.
+        repeat(run("solved", [call(1.0)], task="user_task_3"), 0),
+        repeat(run("not_solved", [call(1.0)], task="user_task_3"), 1),
+        repeat(run("solved", [call(1.0)], task="user_task_3"), 2),
+        # user_task_10 only has repeat 0 so far: not counted in the flip rate.
+        run("not_solved", [call(1.0)], task="user_task_10"),
+    ]
+    [f] = compute_flips(runs)
+    assert [t.user_task_id for t in f.tasks] == ["user_task_0", "user_task_3", "user_task_10"]
+    t0, t3, t10 = f.tasks
+    assert (t0.flipped, t0.flip_rate) == (False, 0.0)
+    assert t3.utilities == [(0, True), (1, False), (2, True)]
+    assert t3.flipped and t3.flip_rate == pytest.approx(2 / 3)
+    assert t10.flip_rate is None
+    assert (f.tasks_flipped.successes, f.tasks_flipped.n) == (1, 2)
+
+    text = report_text("a, b", compute_metrics(runs), stored=7, expected=None, flips=[f])
+    assert "tasks that flip  1/2 = 50.0%" in text
+    assert "user_task_3     r0:1 r1:0 r2:1     2/3     0.67  flips" in text
+
+
+def test_no_flip_section_without_repeats() -> None:
+    runs = [run("solved", [call(1.0)])]
+    text = report_text("e", compute_metrics(runs), 1, 1, flips=compute_flips(runs))
+    assert "tasks that flip" not in text
+
+
+def test_report_shows_failure_labels_and_known_issues() -> None:
+    labelled = run("not_solved", [call(1.0)], task="user_task_4").model_copy(
+        update={"failure_label": "asked_user"}
+    )
+    unlabelled = run("not_solved", [call(1.0)], task="user_task_9")
+    runs = [labelled, unlabelled, run("solved", [call(1.0)])]
+    [g] = compute_metrics(runs)
+    assert g.failure_labels == {"asked_user": 1, "unlabeled": 1}  # solved runs have no label
+    text = report_text("e", [g], 3, 3, tasks={"user_task_4", "user_task_9"})
+    assert "failure labels   asked_user 1, unlabeled 1" in text
+    assert "Known issue, user_task_9: rewards inaction" in text
+    assert "Known issue" not in report_text("e", [g], 3, 3, tasks={"user_task_4"})
