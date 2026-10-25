@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from lab.errors import ConfigError, DailyCapReached, InfraError
 from lab.models.client import ChatClient
 from lab.models.types import ModelRequest, ModelResponse
+from lab.redact import redact
 from lab.scheduler.clock import Clock
 from lab.scheduler.limits import RateLimiter, SentRequest, estimate_tokens
 
@@ -58,6 +59,28 @@ class RequestLogEntry:
     model_id: str
     status: str  # "ok", "http_429", "http_503", "network", "model_error", "config_error"
     tokens: int  # what it counts against the limits
+    # For a failed request (D42): our error class, the HTTP status if there was a response, and
+    # the provider's message with anything key-like redacted. All None for "ok".
+    error_type: str | None = None
+    http_status: int | None = None
+    error_message: str | None = None
+
+    @classmethod
+    def failure(
+        cls, ts: float, provider: str, model_id: str, status: str, tokens: int, error: Exception
+    ) -> RequestLogEntry:
+        return cls(
+            ts=ts,
+            provider=provider,
+            model_id=model_id,
+            status=status,
+            tokens=tokens,
+            error_type=type(error).__name__,
+            http_status=getattr(error, "status_code", None),
+            # The client already redacts with the real key; this second pass covers any other
+            # client and keeps the rule in one place for whatever reaches the store.
+            error_message=redact(str(error)),
+        )
 
 
 RequestLog = Callable[[RequestLogEntry], None]
@@ -89,7 +112,7 @@ class ScheduledClient:
                 # A 429 was refused before any work; other failures (5xx, timeouts) may have
                 # processed the prompt, so count it to stay on the safe side.
                 used = 0 if e.status_code == 429 else estimate.input_tokens
-                self._settle(sent, used, _infra_status(e))
+                self._settle(sent, used, _infra_status(e), error=e)
                 if attempt == self.retry.max_attempts:
                     raise
                 delay = self.retry.delay_s(attempt, e.retry_after_s)
@@ -106,7 +129,7 @@ class ScheduledClient:
                 continue
             except Exception as e:
                 status = "config_error" if isinstance(e, ConfigError) else "model_error"
-                self._settle(sent, estimate.input_tokens, status)
+                self._settle(sent, estimate.input_tokens, status, error=e)
                 raise
             reported = _reported_tokens(response)
             tokens = reported if reported is not None else estimate.total_tokens
@@ -115,19 +138,22 @@ class ScheduledClient:
         raise AssertionError("unreachable: the last attempt either returns or raises")
 
     def _settle(
-        self, sent: SentRequest, tokens: int, status: str, response: ModelResponse | None = None
+        self,
+        sent: SentRequest,
+        tokens: int,
+        status: str,
+        response: ModelResponse | None = None,
+        *,
+        error: Exception | None = None,
     ) -> None:
         self.limiter.settle(sent, tokens, response.rate_limits if response else None)
-        if self.log is not None:
-            self.log(
-                RequestLogEntry(
-                    ts=self.clock.now(),
-                    provider=self.limiter.provider,
-                    model_id=self.limiter.model_id,
-                    status=status,
-                    tokens=tokens,
-                )
-            )
+        if self.log is None:
+            return
+        fields = (self.clock.now(), self.limiter.provider, self.limiter.model_id, status, tokens)
+        if error is None:
+            self.log(RequestLogEntry(*fields))
+        else:
+            self.log(RequestLogEntry.failure(*fields, error=error))
 
 
 def _infra_status(e: InfraError) -> str:

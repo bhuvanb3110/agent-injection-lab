@@ -131,6 +131,31 @@ def test_auth_and_not_found_raise_config_error(code: int) -> None:
         client.complete(request())
 
 
+def test_401_echoing_the_key_is_redacted_and_keeps_its_status() -> None:
+    # Some providers quote the key back on a 401; the message is stored with failed requests.
+    body = {"error": {"message": f"Invalid API Key: {SECRET}", "type": "invalid_request_error"}}
+    client, _ = make_client(lambda _: httpx2.Response(401, json=body))
+    with pytest.raises(ConfigError) as info:
+        client.complete(request())
+    assert SECRET not in str(info.value)
+    assert "[REDACTED]" in str(info.value) and "Invalid API Key" in str(info.value)
+    assert info.value.status_code == 401
+
+
+def test_a_key_with_no_known_shape_is_still_redacted() -> None:
+    key = "plain-looking-key"  # matches none of the patterns; removed as the client's own key
+    body = {"error": {"message": f"Key {key} is not valid for this model"}}
+    client = OpenAICompatClient(
+        load_providers()["groq"],
+        http_client=httpx2.Client(transport=httpx2.MockTransport(lambda _: httpx2.Response(
+            400, json=body))),
+        environ={"GROQ_API_KEY": key},
+    )
+    with pytest.raises(ModelError) as info:
+        client.complete(request())
+    assert key not in str(info.value)
+
+
 def test_missing_key_names_the_variable() -> None:
     with pytest.raises(ConfigError, match="GROQ_API_KEY"):
         OpenAICompatClient(load_providers()["groq"], environ={})

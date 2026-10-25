@@ -67,3 +67,7 @@ class ConfigError(Exception):
 
     It would fail every run identically, so the experiment stops instead of scoring anything.
     """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code  # set when a provider response caused it (401, 403, 404)

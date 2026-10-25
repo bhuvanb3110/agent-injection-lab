@@ -116,6 +116,38 @@ def test_request_history_is_per_model_and_windowed(tmp_path: Path) -> None:
     assert store.request_statuses("groq", "b") == ["ok"]
 
 
+def test_failed_request_errors_round_trip(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite")
+    failed = RequestLogEntry(1.0, "groq", "a", "config_error", 50, "ConfigError", 401, "HTTP 401")
+    store.log_request(failed)
+    store.log_request(RequestLogEntry(2.0, "groq", "a", "ok", 60))
+    assert store.requests("groq", "a") == [failed, RequestLogEntry(2.0, "groq", "a", "ok", 60)]
+
+
+def test_an_older_store_gains_the_error_columns(tmp_path: Path) -> None:
+    # The requests table as it was before D42; its old rows keep NULL errors.
+    path = tmp_path / "runs.sqlite"
+    db = sqlite3.connect(path)
+    db.execute(
+        "CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL,"
+        " provider TEXT NOT NULL, model_id TEXT NOT NULL, status TEXT NOT NULL,"
+        " tokens INTEGER NOT NULL)"
+    )
+    db.execute("INSERT INTO requests (ts, provider, model_id, status, tokens)"
+               " VALUES (1.0, 'groq', 'a', 'config_error', 2342)")
+    db.commit()
+    db.close()
+
+    store = RunStore(path)
+    store.log_request(RequestLogEntry(2.0, "groq", "a", "http_400", 9, "ModelError", 400, "bad"))
+    assert store.requests("groq", "a") == [
+        RequestLogEntry(1.0, "groq", "a", "config_error", 2342),
+        RequestLogEntry(2.0, "groq", "a", "http_400", 9, "ModelError", 400, "bad"),
+    ]
+    store.close()
+    RunStore(path).close()  # opening again doesn't try to add the columns twice
+
+
 def test_run_id_depends_on_every_spec_field() -> None:
     variants = [
         SPEC.model_copy(update={field: value})

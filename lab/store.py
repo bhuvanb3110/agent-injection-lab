@@ -133,10 +133,21 @@ CREATE TABLE IF NOT EXISTS requests (
     provider TEXT NOT NULL,
     model_id TEXT NOT NULL,
     status TEXT NOT NULL,
-    tokens INTEGER NOT NULL
+    tokens INTEGER NOT NULL,
+    error_type TEXT,
+    http_status INTEGER,
+    error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_by_model ON requests (provider, model_id, ts);
 """
+
+# Columns added after the first stores were written, as (table, column, type). A store created
+# before then gets them added on open; old rows keep NULL, since the values were never recorded.
+_ADDED_COLUMNS = [
+    ("requests", "error_type", "TEXT"),  # D42
+    ("requests", "http_status", "INTEGER"),  # D42
+    ("requests", "error_message", "TEXT"),  # D42
+]
 
 
 class RunStore:
@@ -146,6 +157,10 @@ class RunStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(_SCHEMA)
+        for table, column, sql_type in _ADDED_COLUMNS:
+            existing = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
         self._db.commit()
 
     # --- runs ---
@@ -272,10 +287,27 @@ class RunStore:
     def log_request(self, entry: RequestLogEntry) -> None:
         with self._db:
             self._db.execute(
-                "INSERT INTO requests (ts, provider, model_id, status, tokens)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (entry.ts, entry.provider, entry.model_id, entry.status, entry.tokens),
+                "INSERT INTO requests (ts, provider, model_id, status, tokens, error_type,"
+                " http_status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entry.ts,
+                    entry.provider,
+                    entry.model_id,
+                    entry.status,
+                    entry.tokens,
+                    entry.error_type,
+                    entry.http_status,
+                    entry.error_message,
+                ),
             )
+
+    def requests(self, provider: str, model_id: str) -> list[RequestLogEntry]:
+        rows = self._db.execute(
+            "SELECT ts, provider, model_id, status, tokens, error_type, http_status,"
+            " error_message FROM requests WHERE provider = ? AND model_id = ? ORDER BY id",
+            (provider, model_id),
+        )
+        return [RequestLogEntry(*row) for row in rows]
 
     def request_history(
         self, provider: str, model_id: str, since: float

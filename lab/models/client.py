@@ -24,6 +24,7 @@ import openai
 from lab.errors import ConfigError, InfraError, ModelError
 from lab.models.providers import ProviderConfig
 from lab.models.types import ModelRequest, ModelResponse, RateLimitHeaders, RawToolCall
+from lab.redact import redact
 
 # Ollama requires a key but ignores it.
 _NO_KEY_PLACEHOLDER = "unused"
@@ -94,7 +95,9 @@ class OpenAICompatClient:
             raw = self._sdk.chat.completions.with_raw_response.create(**kwargs)
             completion = raw.parse()
         except openai.APIConnectionError as e:  # includes APITimeoutError
-            raise InfraError(f"{type(e).__name__}: {e}", provider=self.provider.name) from e
+            raise InfraError(
+                self._redact(f"{type(e).__name__}: {e}"), provider=self.provider.name
+            ) from e
         except openai.APIStatusError as e:
             raise self._status_error(e) from e
         latency_s = time.perf_counter() - start
@@ -148,9 +151,9 @@ class OpenAICompatClient:
 
     def _status_error(self, e: openai.APIStatusError) -> Exception:
         status = e.status_code
-        # The error message comes from the provider's response body, never from our request,
-        # so it cannot contain the API key.
-        message = f"HTTP {status} from {self.provider.name}: {e.message}"
+        # The message comes from the provider's response body. Some providers echo part of the
+        # key back on a 401, so it is redacted before it can reach a log or the store (D42).
+        message = self._redact(f"HTTP {status} from {self.provider.name}: {e.message}")
         if status in _TRANSIENT_STATUSES or status >= 500:
             return InfraError(
                 message,
@@ -159,10 +162,14 @@ class OpenAICompatClient:
                 retry_after_s=_retry_after_s(e.response),
             )
         if status in _CONFIG_STATUSES:
-            return ConfigError(message)
+            return ConfigError(message, status_code=status)
         return ModelError(
             message, provider=self.provider.name, subtype=f"http_{status}", status_code=status
         )
+
+    def _redact(self, text: str) -> str:
+        # The SDK holds the key; it is used here only to remove it, never stored or printed.
+        return redact(text, secrets=[self._sdk.api_key])
 
 
 def _read_api_key(provider: ProviderConfig, environ: Mapping[str, str]) -> str:

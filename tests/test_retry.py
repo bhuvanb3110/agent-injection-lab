@@ -101,6 +101,34 @@ def test_long_retry_after_stops_the_model_instead_of_sleeping() -> None:
     assert len(log) == 1
 
 
+def test_failed_requests_log_error_type_status_and_redacted_message() -> None:
+    key = "gsk_AbCdEf0123456789XyZaBcDeF0123456789"
+    client, _, log = make([
+        http(503),
+        ModelError(f"HTTP 400 from groq: bad request for {key}", provider="groq",
+                   subtype="http_400", status_code=400),
+    ])
+    with pytest.raises(ModelError):
+        client.complete(REQUEST)
+    assert [(e.error_type, e.http_status) for e in log] == [
+        ("InfraError", 503), ("ModelError", 400)
+    ]
+    assert log[0].error_message == "HTTP 503"
+    assert log[1].error_message is not None
+    assert key not in log[1].error_message and "[REDACTED]" in log[1].error_message
+
+
+def test_config_error_logs_its_status_and_success_logs_no_error() -> None:
+    client, _, log = make([answer("ok"), ConfigError("HTTP 401 from groq: no", status_code=401)])
+    client.complete(REQUEST)
+    with pytest.raises(ConfigError):
+        client.complete(REQUEST)
+    assert (log[0].error_type, log[0].http_status, log[0].error_message) == (None, None, None)
+    assert (log[1].status, log[1].error_type, log[1].http_status) == (
+        "config_error", "ConfigError", 401
+    )
+
+
 def test_network_errors_are_logged_as_network() -> None:
     client, _, log = make([InfraError("timeout", provider="groq"), answer("ok")])
     client.complete(REQUEST)
