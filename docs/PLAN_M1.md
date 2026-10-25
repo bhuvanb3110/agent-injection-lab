@@ -111,7 +111,7 @@ tests/                    see Verification
 2. **Model client** (OpenAI-compatible + FakeClient), `LabLLM`, cache.
 3. **Scheduler** (limits, backoff, infrastructure errors), runner, store, resume. *Done 2026-10-25; layout in DECISIONS.md D22-D26.*
 4. **Metrics, report, CLI, configs**, FakeModel smoke run in CI. *Done 2026-10-25; D32-D38. The baseline runs 1 repeat, not 3 (D36).*
-5. **Real runs on Groq** (large + small), handoff.
+5. **Real runs on Groq** (large + small), handoff. *Done 2026-10-25; gate passed (20b 9/11 discriminating); D40-D41.*
 
 ## 7. Verification
 - `uv run pytest`. None of these tests call a real model, and the tests block network sockets.
