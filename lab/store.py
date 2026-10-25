@@ -264,6 +264,9 @@ class RunStore:
         )
         return [r[0] for r in rows]
 
+    def runs(self, experiment: str) -> list[RunRecord]:
+        return [self.get_run(run_id) for run_id in self.run_ids(experiment)]
+
     # --- provider requests (rate-limit accounting) ---
 
     def log_request(self, entry: RequestLogEntry) -> None:
