@@ -38,9 +38,12 @@ DEFAULT_MAX_WAIT_S = 120.0
 # Calibrated on the 2026-10-25 probe: 386 characters of request JSON were 148 prompt tokens on
 # Groq, i.e. 2.6 characters per token. Rounded down so the estimate errs high (D22).
 CHARS_PER_TOKEN = 2.5
-# Groq's default max_completion_tokens for reasoning models (https://console.groq.com/docs/
-# reasoning). Reserved for the output when the request sets no max_tokens.
-DEFAULT_OUTPUT_RESERVE = 1024
+# How Groq charges tokens/minute, from the 2026-10-25 max_tokens probe (D28): at admission it
+# takes prompt + min(max_tokens, its own output estimate). With max_tokens=256 the header drop
+# was exactly prompt + 256; with 2048 it was prompt + 324 and prompt + 409, nowhere near 2048.
+# So we reserve min(max_tokens, OUTPUT_RESERVE), with OUTPUT_RESERVE above the largest
+# estimate seen.
+OUTPUT_RESERVE = 512
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,9 @@ class TokenEstimate:
 def estimate_tokens(request: ModelRequest) -> TokenEstimate:
     chars = len(json.dumps(request.messages)) + len(json.dumps(request.tools))
     input_tokens = math.ceil(chars / CHARS_PER_TOKEN)
-    reserve = request.max_tokens if request.max_tokens is not None else DEFAULT_OUTPUT_RESERVE
+    reserve = (
+        OUTPUT_RESERVE if request.max_tokens is None else min(request.max_tokens, OUTPUT_RESERVE)
+    )
     return TokenEstimate(input_tokens=input_tokens, total_tokens=input_tokens + reserve)
 
 

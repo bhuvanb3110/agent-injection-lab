@@ -10,7 +10,7 @@ from lab.models.types import ModelRequest, RateLimitHeaders
 from lab.scheduler.clock import FakeClock
 from lab.scheduler.limits import (
     DAY_S,
-    DEFAULT_OUTPUT_RESERVE,
+    OUTPUT_RESERVE,
     RateLimiter,
     estimate_tokens,
 )
@@ -114,7 +114,8 @@ def test_no_limits_never_waits() -> None:
     assert clock.sleeps == []
 
 
-def test_estimate_reserves_max_tokens_or_the_groq_default() -> None:
+def test_estimate_reserves_output_like_groq_does() -> None:
+    # Groq charges prompt + min(max_tokens, its output estimate), not prompt + max_tokens (D28).
     base = {
         "provider": "groq",
         "model_id": "openai/gpt-oss-20b",
@@ -122,8 +123,10 @@ def test_estimate_reserves_max_tokens_or_the_groq_default() -> None:
         "tools": [],
         "temperature": 0.6,
     }
-    default = estimate_tokens(ModelRequest(**base))  # type: ignore[arg-type]
-    capped = estimate_tokens(ModelRequest(**base, max_tokens=50))  # type: ignore[arg-type]
-    assert default.input_tokens == capped.input_tokens > 1000 / 2.6  # errs high
-    assert default.total_tokens == default.input_tokens + DEFAULT_OUTPUT_RESERVE
-    assert capped.total_tokens == capped.input_tokens + 50
+    unset = estimate_tokens(ModelRequest(**base))  # type: ignore[arg-type]
+    small = estimate_tokens(ModelRequest(**base, max_tokens=50))  # type: ignore[arg-type]
+    large = estimate_tokens(ModelRequest(**base, max_tokens=2048))  # type: ignore[arg-type]
+    assert unset.input_tokens == small.input_tokens > 1000 / 2.6  # errs high
+    assert unset.total_tokens == unset.input_tokens + OUTPUT_RESERVE
+    assert small.total_tokens == small.input_tokens + 50
+    assert large.total_tokens == large.input_tokens + OUTPUT_RESERVE
