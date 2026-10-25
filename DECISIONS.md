@@ -214,6 +214,7 @@ One entry per design decision: what was decided, why, and what was rejected. New
   - The agentdojo version is pinned (D3), so it can't drift silently.
   - Anything that does change the task (benchmark version, sampling) *is* in the spec.
 - **Seed:** stored as `null`, because we send no seed. Groq picks its own per request (the probe's `x_groq.seed` changed between calls). This is an open question for Bhuvan.
+- **Update:** superseded by D27. A seed is now sent and is part of the spec.
 
 ### D25. Run store: runs, calls and requests in one SQLite file, insert-only (2026-10-25)
 - **Decision:** `lab/store.py:RunStore` has three tables:
@@ -224,6 +225,7 @@ One entry per design decision: what was decided, why, and what was rejected. New
 - **Totals:** a run's token or cost total is `null` if any call lacks that number. It is never guessed.
 - **Failed runs:** a run that ended in InfraError or a daily cap has no `runs` row. It was never scored. Its requests are still in `requests`, so the cost of failures stays visible.
 - **The trace:** messages are stored as JSON, with `FunctionCall` objects dumped by pydantic. A `model_error` run has no transcript, because AgentDojo's pipeline raises before returning messages. Its calls are kept.
+- **Update:** superseded by D30. A `model_error` run now keeps its transcript up to the failing call.
 
 ### D26. The scheduler queue: sequential, per-model stop, bounded re-queue (2026-10-25)
 - **Decision:** `lab/scheduler/queue.py:Scheduler.run(specs)` runs each pending spec through an injected `run_fn(spec, ctx)` and decides by how the run ended:
@@ -234,3 +236,54 @@ One entry per design decision: what was decided, why, and what was rejected. New
   - **`ConfigError` or any other exception:** raised, which stops the experiment.
 - **Why sequential:** one run at a time keeps the limiter, the store and the trace order simple. The cost is idle time while one model is throttled. Running models in parallel can come later if wall time becomes the bottleneck.
 - **Deviation from PLAN_M1 §3:** the planned `lab/runner.py` and `lab/scheduler/limits.py` became `lab/scheduler/{clock,limits,retry,spec,queue}.py`. Expanding an experiment config into RunSpecs moves to slice 4, together with the config loader and the CLI.
+
+### D27. Seed: base seed in the experiment config, per-run seed = base + repeat index, sent to the provider (2026-10-25)
+- **Decision:** Each experiment config has a `seed` (the base seed). A run's seed is `seed + repeat_idx`.
+  - It is a field of `RunSpec` (so of the run ID) and of `ModelRequest` (so of the cache key).
+  - It is sent with every call of the run, and stored in the run record's `seed` column.
+  - `ModelRequest.seed = None` means no seed is sent. The client sends it only when set, like `reasoning_effort`.
+- **Groq accepts it:** the API reference lists `seed` for chat completions ("best effort to sample deterministically", https://console.groq.com/docs/api-reference, checked 2026-10-25). In the D28 probe every request sent `seed=1234`, and Groq echoed it back in `x_groq.seed`. Ollama also lists `seed` (https://docs.ollama.com/api/openai-compatibility).
+- **Why base + repeat:** repeats must be different samples (D13), and each one must be reproducible on its own. Groq only promises "best effort", so a seed reduces run-to-run variance but doesn't remove it. Repeats are still reported, never averaged away.
+- **Note:** the probe saw two `system_fingerprint` values (`fp_8b41efc9a3`, `fp_e99e93f2ac`) across four identical calls. Groq serves a model from more than one backend, which is one more reason the seed is only best effort.
+
+### D28. Groq charges tokens/minute as prompt + min(max_tokens, its own output estimate); max_tokens is 2048 (2026-10-25)
+- **Probe (2026-10-25):** four identical tiny requests to `openai/gpt-oss-20b` ("Reply with the single word OK.", reasoning_effort low, seed 1234), each after a 65 s pause so the per-minute bucket was full. Only `max_tokens` differed. Every call reported 78 input + 17 output = 95 tokens.
+
+  | max_tokens | header drop (8000 − remaining) | reset-tokens |
+  | --- | --- | --- |
+  | 256 | 334 | 2.505 s |
+  | 2048 | 402 | 3.015 s |
+  | 256 | 334 | 2.505 s |
+  | 2048 | 487 | 3.652 s |
+
+- **Reading:**
+  - With 256, the drop is exactly 78 + 256: the full `max_tokens` was charged.
+  - With 2048 it was 78 + 324 and 78 + 409, nowhere near 2048.
+  - So Groq charges the prompt plus `min(max_tokens, an output estimate of its own)` at admission. The estimate was about 225–410 tokens in these probes and in D20's.
+  - `reset-tokens` equals drop ÷ (8000/60 tokens per second) each time. The header is therefore the charge at admission, not yet corrected to the 95 tokens actually used.
+  - This also explains D20's "about double" surprise: it was the output estimate, not double counting.
+- **Decision:**
+  - `max_tokens: 2048` is set explicitly in every experiment config, and sent.
+    - The probe gives no reason to go lower: a higher cap doesn't raise Groq's per-minute charge.
+    - A lower cap would truncate more turns, and under D29 a truncated turn is a model error.
+    - 2048 still bounds the cost of a runaway reasoning turn.
+  - The limiter's pre-send estimate is `input estimate + min(max_tokens, 512)`. Before this it was `input + max_tokens`. 512 sits above the largest output estimate seen (409).
+  - After the call, the estimate is replaced by the reported usage, as before (D22). Groq's own header stays the stricter check whenever it is lower.
+- **Not known:** whether Groq's tokens/day counts the admission charge or the actual usage. There is no TPD header. The limiter counts actual usage against TPD. If Groq counts the charge, its TPD will run out before ours does, and the 429 → `DailyCapReached` path (D23) stops the run cleanly.
+- **Note:** Groq marks `max_tokens` as deprecated in favour of `max_completion_tokens`, with the same meaning (https://console.groq.com/docs/api-reference). We keep sending `max_tokens` because Ollama only takes that one, and the probe shows Groq honours it.
+- **Rejected:** reserving the full `max_tokens`. With 2048, each call would reserve about 5K of the 8K per minute, and the limiter would be about four times more cautious than Groq is.
+
+### D29. A response cut off by the token limit is a model error, subtype "truncated" (2026-10-25)
+- **Decision:** When a response has `finish_reason == "length"`, `LabLLM` records the call as usual (tokens and cost count), puts the partial assistant message in the run's transcript, and raises `ModelError(subtype="truncated")`. The scheduler stores the run as `model_error` / `truncated` (D21).
+- **Why:** a cut-off message may hold half an answer or a tool call whose JSON is incomplete. Acting on it, or scoring its text, would treat a broken output as the model's decision. Raising it as a model error puts it in the model-error breakdown, where readers can see it, instead of hiding it inside not-solved.
+- **Cache:** the truncated response is cached like any successful response, so replaying the run gives the same model error. Determinism is kept and no call is repeated.
+
+### D30. Runs that end in model_error keep their partial transcript (2026-10-25)
+- **Decision:** `RunContext.messages` holds the transcript as of the latest model call.
+  - `LabLLM` sets it to the incoming messages before each call, and to messages + reply after it.
+  - When `ModelError` is raised, the scheduler stores `ctx.messages` as the run's trace. Before this the trace was empty.
+- **Why:** BRIEF §9 asks for the full trace on every run. AgentDojo's pipeline raises before it returns messages, so the context is the only place the transcript survives. Model errors can only come from a model call, so the transcript at that point is complete up to the failure.
+
+### D31. A test keeps `.env.example` free of real values (2026-10-25)
+- **Decision:** `tests/test_env_example.py` parses `.env.example` and fails if any `NAME=` line has a value. On failure it names the variable but never prints the value. `OLLAMA_BASE_URL` was removed: nothing read it, and the Ollama URL lives in `configs/providers.yaml`.
+- **Why:** `.env.example` is the one committed file shaped like `.env`. A key pasted into the wrong file would otherwise be committed and pushed.
