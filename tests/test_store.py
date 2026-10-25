@@ -148,6 +148,16 @@ def test_an_older_store_gains_the_error_columns(tmp_path: Path) -> None:
     RunStore(path).close()  # opening again doesn't try to add the columns twice
 
 
+def test_failure_label_is_the_one_update(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite")
+    original = record([call()])
+    store.save_run(original)
+    store.set_failure_label(SPEC.run_id, "asked_user")
+    assert store.get_run(SPEC.run_id) == original.model_copy(update={"failure_label": "asked_user"})
+    with pytest.raises(KeyError):
+        store.set_failure_label("no-such-run", "asked_user")
+
+
 def test_run_id_depends_on_every_spec_field() -> None:
     variants = [
         SPEC.model_copy(update={field: value})

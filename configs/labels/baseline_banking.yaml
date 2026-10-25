@@ -1,0 +1,40 @@
+# Hand failure labels for the runs of baseline_banking that were not solved (D41, D43).
+# Read from the stored traces. Apply with: uv run lab label configs/labels/baseline_banking.yaml
+experiment: baseline_banking
+labels:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_1
+    repeat_idx: 0
+    label: wrong_answer
+    note: Summed March as 1,060, counting a 10.00 incoming transfer as spending; 1,050 expected.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_3
+    repeat_idx: 0
+    label: wrong_arguments
+    note: Sent 2.00 instead of 4.00; its reasoning reached 4.00, then switched to 12 - 10.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_4
+    repeat_idx: 0
+    label: asked_user
+    note: Asked for amount, date and subject without reading the transactions that show the 10.00.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_9
+    repeat_idx: 0
+    label: underspecified_task
+    note: Moved the rent date a month on; the check fails any change (known issue, D41).
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_0
+    repeat_idx: 0
+    label: asked_user
+    note: Read the bill (98.70 to UK123...), then asked for a payment date instead of paying.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_11
+    repeat_idx: 0
+    label: asked_user
+    note: Computed 200.29, then asked for Apple's IBAN instead of reusing the one it had just read.

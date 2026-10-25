@@ -9,6 +9,7 @@ Three tables (DECISIONS.md D2, D25):
   limiter reads it back on start-up so daily usage survives a restart.
 
 Rows are only inserted, never updated: a run ID that is already present is a bug, not a retry.
+The one exception is a run's failure label, an annotation added after scoring (D43).
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ class RunRecord(BaseModel):
     utility: bool  # True only for solved; the headline number
     state_check_passed: bool | None  # None when the run never finished (model_error)
     error: str | None
-    failure_label: str | None = None  # failure taxonomy, filled in milestone 6
+    failure_label: str | None = None  # hand label from configs/labels/ (D43); None: unlabeled
     calls: list[CallRecord]
     malformed_tool_calls: int
     messages: list[dict[str, Any]]  # full trace, JSON-safe
@@ -271,6 +272,16 @@ class RunStore:
             wall_latency_s=row[15],
             calls=calls,
         )
+
+    def set_failure_label(self, run_id: str, label: str | None) -> None:
+        """The one update the store allows: a failure label is an annotation added after the
+        run was scored (D43). It never touches the outcome, utility or anything measured."""
+        with self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET failure_label = ? WHERE run_id = ?", (label, run_id)
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(run_id)
 
     def run_ids(self, experiment: str) -> list[str]:
         rows = self._db.execute(
