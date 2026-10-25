@@ -23,6 +23,8 @@ from agentdojo.functions_runtime import FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite, functions_stack_trace_from_messages
 from agentdojo.types import ChatAssistantMessage, ChatMessage, get_text_content_as_str
 
+from lab.models.types import CallRecord, RunContext
+
 Env = TypeVar("Env", bound=TaskEnvironment)
 
 
@@ -41,14 +43,22 @@ class CaseResult:
     utility: bool  # True only when outcome is SOLVED
     state_check_passed: bool  # the task's utility predicate, evaluated for every outcome
     messages: list[ChatMessage]
+    calls: list[CallRecord]  # one per model call, in order (D17)
+    malformed_tool_calls: int  # D6
 
 
 def run_case(
     suite: TaskSuite[Env],
     pipeline: BasePipelineElement,
     user_task: BaseUserTask[Env],
+    ctx: RunContext | None = None,
 ) -> CaseResult:
-    """Run `user_task` once with no injections and score the final state and answer."""
+    """Run `user_task` once with no injections and score the final state and answer.
+
+    `ctx` collects a record of every model call. The runner passes one carrying the repeat
+    index; tests can leave it out.
+    """
+    ctx = ctx if ctx is not None else RunContext()
     environment = suite.load_and_inject_default_environment({})
     task_environment = user_task.init_environment(environment)
     pre_environment = task_environment.model_copy(deep=True)
@@ -57,7 +67,7 @@ def run_case(
     # Pass messages and extra_args explicitly: the defaults in AgentDojo's signatures are
     # shared mutable objects.
     _, _, post_environment, result_messages, _ = pipeline.query(
-        user_task.PROMPT, runtime, task_environment, [], {}
+        user_task.PROMPT, runtime, task_environment, [], {"ctx": ctx}
     )
     messages = list(result_messages)
     final = _final_assistant_message(messages)
@@ -72,6 +82,8 @@ def run_case(
         utility=outcome is Outcome.SOLVED,
         state_check_passed=state_check_passed,
         messages=messages,
+        calls=list(ctx.calls),
+        malformed_tool_calls=ctx.malformed_tool_calls,
     )
 
 
