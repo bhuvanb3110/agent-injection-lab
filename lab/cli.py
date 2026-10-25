@@ -152,7 +152,7 @@ def report_text(
             f"  calls            {g.calls} ({g.cached_calls} from cache), "
             f"{g.requests_sent} provider requests",
             f"  tokens           input {_fmt_int(g.input_tokens)}, output "
-            f"{_fmt_int(g.output_tokens)} (reasoning {_fmt_int(g.reasoning_tokens)})",
+            f"{_fmt_int(g.output_tokens)} (reasoning {_fmt_reasoning(g)})",
             f"  est. cost        {_fmt_cost(g.cost_usd)} at public paid prices",
             f"  latency / call   {_fmt_latency(g.call_latency)}",
             f"  latency / task   {_fmt_latency(g.task_latency)}",
@@ -199,6 +199,17 @@ def _fmt_tokens(value: int | None) -> str:
 
 def _fmt_int(value: int | None) -> str:
     return "unknown" if value is None else f"{value:,}"
+
+
+def _fmt_reasoning(g: GroupMetrics) -> str:
+    """The total if every call reported it; otherwise the range the reported counts allow."""
+    if g.reasoning_tokens is not None or g.reasoning_tokens_range is None:
+        return _fmt_int(g.reasoning_tokens)
+    low, high = g.reasoning_tokens_range
+    return (
+        f"{low:,} to {high:,}; {g.calls_without_reasoning_tokens} of {g.calls} calls "
+        "had no count (D40)"
+    )
 
 
 def _fmt_proportion(p: Proportion) -> str:

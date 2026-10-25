@@ -236,6 +236,29 @@ def test_reasoning_tokens_are_part_of_output_tokens_and_cost() -> None:
     assert response.reasoning_tokens == 36
     # Cost is charged on completion_tokens, which already include reasoning (D19).
     assert response.cost_usd == pytest.approx((148 * 0.075 + 63 * 0.30) / 1e6)
+    assert response.usage == GROQ_USAGE  # raw usage kept as sent (D40)
+
+
+# In the baseline one gpt-oss-120b call (no reasoning text) came back without a reasoning count
+# (D40). Either way Groq leaves it out, the count is None, never 0, and the raw usage shows which.
+@pytest.mark.parametrize(
+    "details",
+    [None, {"reasoning_tokens": None}],
+    ids=["no-completion-details", "null-reasoning-tokens"],
+)
+def test_missing_reasoning_count_is_none_and_raw_usage_shows_why(
+    details: dict[str, Any] | None,
+) -> None:
+    usage: dict[str, Any] = {"prompt_tokens": 923, "completion_tokens": 73, "total_tokens": 996}
+    if details is not None:
+        usage["completion_tokens_details"] = details
+    message = {"role": "assistant", "content": "The bill has been paid."}
+    client, _ = make_client(lambda _: httpx2.Response(200, json=completion(message, usage)))
+    response = client.complete(request())
+    assert response.reasoning_tokens is None
+    assert (response.input_tokens, response.output_tokens) == (923, 73)
+    assert response.usage == usage
+    assert ("completion_tokens_details" in response.usage) == (details is not None)
 
 
 def test_parses_groq_rate_limit_headers() -> None:

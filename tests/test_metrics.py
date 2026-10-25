@@ -2,6 +2,7 @@
 
 import pytest
 
+from lab.cli import report_text
 from lab.models.types import CallRecord
 from lab.scheduler.spec import RunSpec
 from lab.scoring.metrics import compute_metrics, percentile, wilson_interval
@@ -115,6 +116,24 @@ def test_totals_and_groups() -> None:
     assert a.cost_usd == pytest.approx(0.002)
     assert b.input_tokens is None  # one call lacks usage: never guessed
     assert a.seeds == [1000]
+
+
+def test_missing_reasoning_count_gives_a_range_not_a_guess() -> None:
+    no_count = call(1.0).model_copy(update={"reasoning_tokens": None, "output_tokens": 73})
+    [g] = compute_metrics([run("solved", [call(1.0), call(1.0), no_count])])
+    assert g.reasoning_tokens is None  # the total is still never guessed (D25)
+    assert g.calls_without_reasoning_tokens == 1
+    assert g.reasoning_tokens_range == (4, 4 + 73)  # 0..73 for the call without a count (D40)
+    [full] = compute_metrics([run("solved", [call(1.0)])])
+    assert (full.calls_without_reasoning_tokens, full.reasoning_tokens_range) == (0, (2, 2))
+    unknown = no_count.model_copy(update={"output_tokens": None})
+    [none] = compute_metrics([run("solved", [unknown])])
+    assert none.reasoning_tokens_range is None
+
+    text = report_text("e", [g, full, none], stored=3, expected=3)
+    assert "(reasoning 4 to 77; 1 of 3 calls had no count (D40))" in text
+    assert "(reasoning 2)" in text
+    assert "(reasoning unknown)" in text
 
 
 def test_discriminating_utility_and_do_nothing_floor() -> None:

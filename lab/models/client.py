@@ -121,6 +121,8 @@ class OpenAICompatClient:
         usage = completion.usage
         input_tokens = usage.prompt_tokens if usage else None
         output_tokens = usage.completion_tokens if usage else None
+        # Groq may leave out the reasoning count (D40): either no `completion_tokens_details`
+        # or `reasoning_tokens: null`. Both give None here; the raw `usage` tells them apart.
         details = usage.completion_tokens_details if usage else None
         reasoning_tokens = details.reasoning_tokens if details else None
         cost_usd = (
@@ -138,6 +140,7 @@ class OpenAICompatClient:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
+            usage=usage.model_dump(mode="json", exclude_unset=True) if usage else None,
             latency_s=latency_s,
             cost_usd=cost_usd,
             rate_limits=rate_limit_headers(raw.headers),

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 
 from lab.domains.agentdojo_bridge.banking import DO_NOTHING_PASSES
 from lab.domains.agentdojo_bridge.run_case import Outcome
+from lab.models.types import CallRecord
 from lab.store import RunRecord
 
 Z_95 = 1.959963984540054  # standard normal quantile for a two-sided 95% interval
@@ -103,6 +104,10 @@ class GroupMetrics:
     input_tokens: int | None
     output_tokens: int | None  # includes reasoning tokens (D19)
     reasoning_tokens: int | None
+    # When some calls lack a reasoning count (D40): the reported counts summed, and that plus
+    # those calls' output tokens, which bound what they spent. None if those also lack usage.
+    calls_without_reasoning_tokens: int
+    reasoning_tokens_range: tuple[int, int] | None
     cost_usd: float | None  # at public paid prices
     call_latency: Latency  # per model call, cache hits excluded
     task_latency: Latency  # per run: sum of its call latencies, runs with no cache hit only
@@ -167,6 +172,8 @@ def _group(
         input_tokens=_total(run.input_tokens for run in runs),
         output_tokens=_total(run.output_tokens for run in runs),
         reasoning_tokens=_total(run.reasoning_tokens for run in runs),
+        calls_without_reasoning_tokens=sum(c.reasoning_tokens is None for c in calls),
+        reasoning_tokens_range=_reasoning_range(calls),
         cost_usd=_total_float(run.cost_usd for run in runs),
         call_latency=Latency.of([c.latency_s for c in calls if not c.cached]),
         task_latency=Latency.of([sum(c.latency_s for c in run.calls) for run in uncached_runs]),
@@ -177,6 +184,16 @@ def _group(
         first_run_at=started[0] if started else None,
         last_run_at=started[-1] if started else None,
     )
+
+
+def _reasoning_range(calls: Sequence[CallRecord]) -> tuple[int, int] | None:
+    """Lowest and highest reasoning total the calls allow. A call without a reasoning count
+    spent between 0 and its output tokens on reasoning (D19: output includes reasoning)."""
+    known = sum(c.reasoning_tokens for c in calls if c.reasoning_tokens is not None)
+    missing = [c.output_tokens for c in calls if c.reasoning_tokens is None]
+    if None in missing:
+        return None
+    return known, known + sum(m for m in missing if m is not None)
 
 
 def _total(values: Iterable[int | None]) -> int | None:

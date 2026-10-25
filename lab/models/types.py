@@ -67,6 +67,9 @@ class ModelResponse(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     reasoning_tokens: int | None = None
+    # The provider's `usage` object exactly as sent (only the keys it set), so a missing count
+    # can be traced to what the provider returned (D40). None if it sent no usage.
+    usage: dict[str, Any] | None = None
     latency_s: float
     cost_usd: float | None
     cached: bool = False
@@ -89,6 +92,7 @@ class CallRecord(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     reasoning_tokens: int | None = None
+    usage: dict[str, Any] | None = None  # raw provider usage (D40)
     latency_s: float
     cost_usd: float | None
     finish_reason: str | None
