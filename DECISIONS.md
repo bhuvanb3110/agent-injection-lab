@@ -123,3 +123,62 @@ One entry per design decision: what was decided, why, and what was rejected. New
 ### D17. Per-run telemetry travels in `extra_args["ctx"]` (2026-10-25)
 - **Decision:** `run_case` creates (or receives) a `RunContext` and passes it as `extra_args["ctx"]`. `LabLLM` appends one `CallRecord` per call and raises if no context is present. `CaseResult` now carries `calls` and `malformed_tool_calls`.
 - **Why:** AgentDojo already threads `extra_args` through every element, including `ToolsExecutionLoop`, so no AgentDojo class needs changing. Refusing to call without a context means no call can go uncounted.
+
+### D18. Approved model pair: gpt-oss-120b (large) and gpt-oss-20b (small) on Groq (2026-10-25)
+- **Decision:** Bhuvan approved `openai/gpt-oss-120b` as the large model and `openai/gpt-oss-20b` as the small model. This settles the open part of D16.
+- **Deviation from the brief:** RQ5 asked about "small (about 8B) vs large (70B+)" models. It now becomes **small vs large within one model family**: 20B vs 120B total parameters, both mixture-of-experts.
+  - The small arm is larger than the brief's 8B, so a "small models are hijacked more" result will be weaker evidence about truly small models.
+  - In exchange, the pair differs mainly in size: same family, same training recipe, same chat format. That makes the size comparison cleaner.
+- **Why:** Groq retired the Llama pair from the free tier (D16), and the gpt-oss pair is Groq's recommended replacement. Both have tool calling, confirmed by the probe below.
+- **Probe (2026-10-25):** one tiny tool-calling request per model (one `get_time(city)` tool, no Banking task). Temperature 0.6, `reasoning_effort=medium`, `max_tokens=512`.
+  - Both models returned `finish_reason="tool_calls"`, `content=None`, and a standard `tool_calls[]` entry (`type="function"`, `function.arguments` as a JSON string). That is exactly what `OpenAICompatClient` parses. Tool-call IDs look like `fc_<uuid>`.
+  - Reasoning came back as `message.reasoning`, which the SDK exposes in `model_extra` as D14 expects.
+  - Usage: 120b had 148 input and 63 output tokens, 36 of them reasoning. 20b had 148 input and 37 output tokens, 14 of them reasoning. Reasoning is reported in `usage.completion_tokens_details.reasoning_tokens` and is part of `completion_tokens`.
+  - Groq also returns `usage_breakdown` and `x_groq` fields. Neither is used.
+
+### D19. Sampling: temperature 0.6 and reasoning_effort "medium", fixed per model and recorded per run (2026-10-25)
+- **Decision:** Every run uses the per-model `sampling` from `configs/providers.yaml`: `temperature: 0.6` and `reasoning_effort: medium`. Both are part of the run spec, and therefore of the run ID and the stored record, and of the cache key. `reasoning_effort` is sent only when set, because Ollama doesn't take it.
+- **Why temperature 0.6, not 0:** BRIEF §7 asks for "temperature 0 where the provider allows". For reasoning models Groq recommends 0.5–0.7, with a default of 0.6, "to prevent repetitions or incoherent outputs" (https://console.groq.com/docs/reasoning, checked 2026-10-25). It also silently turns 0 into 1e-8 (D16).
+  - At 0.6, runs are not deterministic, so the 3 repeats measure real variance. They must be reported, never averaged away.
+  - The model pages for these models give no temperature of their own.
+- **Why "medium":** Groq documents low, medium and high for gpt-oss but states no default. Pinning a value means a silent change to the provider's default can't move our results. Medium is the middle setting.
+  - Low would save only a few output tokens. Input tokens dominate the token budget (about 8K input per task, see D20).
+  - Medium makes it more likely that the small model clears the ~20% utility gate.
+  - This is an open question for Bhuvan.
+- **Reasoning tokens:** they are counted. The probe shows `completion_tokens` already includes them, so `output_tokens` and cost (at the output price) include reasoning. `reasoning_tokens` is also stored on its own, per call and per run, so we can see how much of the output was reasoning.
+- **Rejected:** temperature 0. It is against Groq's guidance for these models, and it isn't really sent anyway.
+
+### D20. Free-tier limits come from the account's limits page; tokens/day is the binding limit (2026-10-25)
+- **Decision:** `configs/providers.yaml` takes its limits from https://console.groq.com/settings/limits, read by Bhuvan on 2026-10-25. These replace the docs-page values marked unverified in D16. Limits are per model and not shared across models.
+
+  | Model | RPM | RPD | TPM | TPD |
+  | --- | --- | --- | --- | --- |
+  | openai/gpt-oss-120b | 30 | 1K | 8K | 200K |
+  | openai/gpt-oss-20b | 30 | 1K | 8K | 200K |
+  | llama-prompt-guard-2-22m | 30 | 14.4K | 15K | 500K |
+  | llama-prompt-guard-2-86m | 30 | 14.4K | 15K | 500K |
+
+  The Prompt Guard models are listed now (with `tool_calling: false`) for the detection defenses in milestone 4.
+- **Rate-limit headers (probe and https://console.groq.com/docs/rate-limits):**
+  - Groq always sends `x-ratelimit-limit|remaining|reset-requests`, which track **requests per day**, and `x-ratelimit-limit|remaining|reset-tokens`, which track **tokens per minute**.
+  - `retry-after` (in seconds) comes only with a 429.
+  - There is no header for RPM or TPD, so the scheduler tracks those itself.
+  - Reset values are durations such as `1m26.4s` and `3.165s`. 86.4 s is one day divided by 1000, which suggests requests replenish gradually rather than resetting at midnight.
+  - Surprise: after the 211-token probe call, `remaining-tokens` fell by 422 (7578 of 8000). For 20b it was 185 tokens vs a drop of 373. Groq's TPM accounting seems to count about twice the reported usage, perhaps by reserving output tokens. The scheduler trusts the header whenever it has one.
+- **Token budget per Banking task (estimate, no API calls):**
+  - Calibrated from the probe: about 2.6 characters of request JSON per prompt token.
+  - The AgentDojo default system prompt plus the 11 Banking tool schemas (5,250 characters of JSON) come to about **2.2K tokens on every call**.
+  - Replaying each task's ground-truth trace gives 2–6 calls per task (mean 3.1) and **about 7.9K input tokens per task** (range 4.9K–17K). The largest single prompt is about 3.4K, well under the 8K TPM.
+  - A real model takes more calls than the ground truth. Assuming about 1.5–2× as many calls, plus reasoning output, a realistic figure is **about 12–17K tokens per task**.
+- **Tasks per day:** 200K TPD allows about **12–16 Banking tasks per model per day** at that rate, or 23–25 if the model takes the ground-truth path.
+  - The baseline is 16 tasks × 3 repeats = 48 runs per model, which takes about **3–4 days**.
+  - The two models have separate limits, so they progress side by side.
+  - If Groq's TPD accounting also counts double (see the surprise above), that halves. This is why the scheduler must stop cleanly at the cap and resume later.
+
+### D21. A ModelError is stored as outcome "model_error" with a subtype, and counts as not solved (2026-10-25)
+- **Decision:** When a run raises `ModelError` (for example an HTTP 400, a response with no choices, or a non-function tool call), the scheduler stores the run with `outcome="model_error"`, `utility=False`, and a subtype such as `http_400`, `no_choices` or `unsupported_tool_call_type`.
+  - The run counts in the denominator of headline utility, as not solved.
+  - It is never re-queued and never dropped.
+  - The calls made before the error are kept.
+  - `max_iterations` and `no_final_answer` remain their own outcomes. They are also model errors under D5, so the report groups all three in its model-error breakdown.
+- **Why:** This settles the open point in D11. Retrying the same request would fail the same way, so re-queueing would loop forever. Dropping the run would bias utility upward, which CLAUDE.md forbids.

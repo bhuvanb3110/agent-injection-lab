@@ -6,9 +6,13 @@
 # Prices are the public *paid* on-demand prices in USD per million tokens. We pay nothing on the
 # free tier; the prices only give results a real cost axis (BRIEF §8).
 #
-# `limits` are per model. null means "no limit published / not applicable".
+# `limits` are per model, never shared across models. null means "no limit published / not
+# applicable".
 #   rpm = requests per minute, rpd = requests per day,
 #   tpm = tokens per minute,   tpd = tokens per day.
+#
+# `sampling` (optional) is the temperature and reasoning effort every run of that model uses.
+# Each run record stores the values it actually used.
 
 providers:
   groq:
@@ -27,17 +31,23 @@ providers:
           output_per_mtok: 0.60
           source: https://console.groq.com/docs/model/openai/gpt-oss-120b
           checked: 2026-10-25
-        limits:
+        sampling: &gpt_oss_sampling
+          # Groq's recommendation for reasoning models: temperature 0.5-0.7, default 0.6
+          # (https://console.groq.com/docs/reasoning). reasoning_effort is our choice (D19);
+          # Groq documents low/medium/high for gpt-oss and states no default.
+          temperature: 0.6
+          reasoning_effort: medium
+          source: https://console.groq.com/docs/reasoning
+          checked: 2026-10-25
+        limits: &gpt_oss_limits
           rpm: 30
           rpd: 1000
           tpm: 8000
           tpd: 200000
-          source: https://console.groq.com/docs/rate-limits
+          # Read by Bhuvan from the account's own limits page (D20).
+          source: https://console.groq.com/settings/limits
           checked: 2026-10-25
-          # The page has "Free Plan" and "Developer Plan" tabs and the text we could read says
-          # the table shows Developer plan base limits. Third-party summaries report the same
-          # numbers for the free plan. Confirm on https://console.groq.com/settings/limits.
-          verified_for_free_plan: false
+          verified_for_free_plan: true
       openai/gpt-oss-20b:
         tool_calling: true
         price:
@@ -45,14 +55,34 @@ providers:
           output_per_mtok: 0.30
           source: https://console.groq.com/docs/model/openai/gpt-oss-20b
           checked: 2026-10-25
-        limits:
-          rpm: 30
-          rpd: 1000
-          tpm: 8000
-          tpd: 200000
-          source: https://console.groq.com/docs/rate-limits
+        sampling: *gpt_oss_sampling
+        limits: *gpt_oss_limits
+
+      # Prompt-injection classifiers, for the detection defenses (milestone 4). Not chat agents:
+      # no tool calling, 512-token context. Limits are per model, not shared.
+      meta-llama/llama-prompt-guard-2-22m:
+        tool_calling: false
+        price:
+          input_per_mtok: 0.03
+          output_per_mtok: 0.03
+          source: https://console.groq.com/docs/model/meta-llama/llama-prompt-guard-2-22m
           checked: 2026-10-25
-          verified_for_free_plan: false  # same caveat as gpt-oss-120b
+        limits: &prompt_guard_limits
+          rpm: 30
+          rpd: 14400
+          tpm: 15000
+          tpd: 500000
+          source: https://console.groq.com/settings/limits
+          checked: 2026-10-25
+          verified_for_free_plan: true
+      meta-llama/llama-prompt-guard-2-86m:
+        tool_calling: false
+        price:
+          input_per_mtok: 0.04
+          output_per_mtok: 0.04
+          source: https://console.groq.com/docs/model/meta-llama/llama-prompt-guard-2-86m
+          checked: 2026-10-25
+        limits: *prompt_guard_limits
 
   ollama:
     # Local server. The key is "required but ignored" by Ollama, so none is read from the

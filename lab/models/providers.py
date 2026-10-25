@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -36,10 +37,23 @@ class Limits(_Strict):
     verified_for_free_plan: bool
 
 
+ReasoningEffort = Literal["low", "medium", "high"]
+
+
+class Sampling(_Strict):
+    """The temperature and reasoning effort every run of a model uses (DECISIONS.md D19)."""
+
+    temperature: float
+    reasoning_effort: ReasoningEffort | None  # None: the parameter is not sent
+    source: str
+    checked: date
+
+
 class ModelInfo(_Strict):
     tool_calling: bool
     price: Price
     limits: Limits
+    sampling: Sampling | None = None
 
 
 class ProviderConfig(_Strict):
