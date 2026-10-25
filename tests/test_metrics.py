@@ -115,3 +115,16 @@ def test_totals_and_groups() -> None:
     assert a.cost_usd == pytest.approx(0.002)
     assert b.input_tokens is None  # one call lacks usage: never guessed
     assert a.seeds == [1000]
+
+
+def test_discriminating_utility_and_do_nothing_floor() -> None:
+    runs = [
+        run("solved", [call(1.0)], task="user_task_0"),
+        run("not_solved", [call(1.0)], task="user_task_1"),
+        run("solved", [call(1.0)], task="user_task_8"),  # a do-nothing agent passes it
+        run("not_solved", [call(1.0)], task="user_task_9"),  # failed even though the floor passes
+    ]
+    [g] = compute_metrics(runs, do_nothing_passes=frozenset({"user_task_8", "user_task_9"}))
+    assert (g.benign_utility.successes, g.benign_utility.n) == (2, 4)
+    assert (g.discriminating_utility.successes, g.discriminating_utility.n) == (1, 2)
+    assert (g.do_nothing_floor.successes, g.do_nothing_floor.n) == (2, 4)

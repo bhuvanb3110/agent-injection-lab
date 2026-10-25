@@ -18,13 +18,14 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from lab.config import ExperimentConfig, expand, load_experiment
+from lab.domains.agentdojo_bridge import DO_NOTHING_PASSES
 from lab.errors import ConfigError
 from lab.models.cache import ResponseCache
 from lab.models.providers import load_providers
 from lab.runner import ExperimentRunner, TokenBudget, model_key
 from lab.scheduler.clock import SystemClock
 from lab.scheduler.spec import RunSpec
-from lab.scoring.metrics import GroupMetrics, Latency, compute_metrics
+from lab.scoring.metrics import GroupMetrics, Latency, Proportion, compute_metrics
 from lab.store import RunStore
 
 DEFAULT_STORE = Path("results/runs.sqlite")
@@ -130,16 +131,20 @@ def report_text(
         lines.append(f"Runs stored: {stored} of {expected} ({expected - stored} pending, unscored)")
     if not groups:
         lines.append("No runs stored yet.")
+    else:
+        lines.append(
+            "Discriminating tasks: those a do-nothing agent fails; excluded "
+            f"{', '.join(sorted(DO_NOTHING_PASSES, key=_task_number))} (D37, D39)."
+        )
     for g in groups:
-        u = g.benign_utility
-        low, high = u.ci95
-        rate = "n/a" if u.rate is None else f"{u.rate:.1%}"
         errors = ", ".join(f"{k} {v}" for k, v in g.model_errors.items()) or "none"
         lines += [
             "",
             f"{g.provider}/{g.model_id}  topology {g.topology}",
-            f"  benign utility   {u.successes}/{u.n} = {rate}  (95% Wilson CI {low:.1%} to "
-            f"{high:.1%})",
+            "  benign utility (95% Wilson CI)",
+            f"    discriminating tasks  {_fmt_proportion(g.discriminating_utility)}  headline",
+            f"    all tasks             {_fmt_proportion(g.benign_utility)}",
+            f"    do-nothing floor      {_fmt_proportion(g.do_nothing_floor)}  same runs",
             "  outcomes         " + ", ".join(f"{k} {v}" for k, v in g.outcomes.items()),
             f"  model errors     {g.model_error_total}: {errors}",
             f"  malformed calls  {g.malformed_tool_calls} in {g.runs_with_malformed_tool_calls} "
@@ -194,6 +199,16 @@ def _fmt_tokens(value: int | None) -> str:
 
 def _fmt_int(value: int | None) -> str:
     return "unknown" if value is None else f"{value:,}"
+
+
+def _fmt_proportion(p: Proportion) -> str:
+    low, high = p.ci95
+    rate = "n/a" if p.rate is None else f"{p.rate:.1%}"
+    return f"{p.successes}/{p.n} = {rate}  ({low:.1%} to {high:.1%})"
+
+
+def _task_number(task_id: str) -> int:
+    return int(task_id.rsplit("_", 1)[1])
 
 
 def _fmt_cost(value: float | None) -> str:

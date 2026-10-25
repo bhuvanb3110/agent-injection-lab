@@ -50,26 +50,35 @@ def test_smoke_runs_end_to_end_and_is_deterministic(
     first, second = tmp_path / "a", tmp_path / "b"
     assert lab_run(first) == 0
     out = capsys.readouterr().out
-    assert "6 runs, 0 already done, 6 to go" in out
+    assert "8 runs, 0 already done, 8 to go" in out
     assert "All runs done" in out
 
     assert lab_run(second) == 0
     assert stored_results(first / "runs.sqlite") == stored_results(second / "runs.sqlite")
 
     db = sqlite3.connect(first / "runs.sqlite")
-    outcomes = dict(
-        db.execute("SELECT model_id, group_concat(DISTINCT outcome) FROM runs GROUP BY model_id")
-    )
+    outcomes = set(db.execute("SELECT model_id, user_task_id, outcome FROM runs"))
     db.close()
-    assert outcomes == {"ground-truth": "solved", "refuse": "not_solved"}
+    tasks = ["user_task_0", "user_task_1", "user_task_2", "user_task_8"]
+    assert outcomes == {
+        *(("ground-truth", t, "solved") for t in tasks),
+        *(("refuse", t, "not_solved") for t in tasks[:3]),
+        ("refuse", "user_task_8", "solved"),  # passes with no action taken (D37)
+    }
 
     capsys.readouterr()
     assert main(["report", "smoke", "--store", str(first / "runs.sqlite"),
                  "--config", str(SMOKE)]) == 0
     report = capsys.readouterr().out
-    assert "Runs stored: 6 of 6 (0 pending, unscored)" in report
-    assert "benign utility   3/3 = 100.0%  (95% Wilson CI 43.9% to 100.0%)" in report
-    assert "benign utility   0/3 = 0.0%  (95% Wilson CI 0.0% to 56.1%)" in report
+    assert "Runs stored: 8 of 8 (0 pending, unscored)" in report
+    ground_truth, refuse = report.split("fake/ground-truth")[1].split("fake/refuse")
+    assert "discriminating tasks  3/3 = 100.0%  (43.9% to 100.0%)  headline" in ground_truth
+    assert "all tasks             4/4 = 100.0%  (51.0% to 100.0%)" in ground_truth
+    assert "do-nothing floor      1/4 = 25.0%  (4.6% to 69.9%)  same runs" in ground_truth
+    # The scripted do-nothing model scores exactly the floor, and 0 on the headline.
+    assert "discriminating tasks  0/3 = 0.0%  (0.0% to 56.1%)  headline" in refuse
+    assert "all tasks             1/4 = 25.0%  (4.6% to 69.9%)" in refuse
+    assert "do-nothing floor      1/4 = 25.0%  (4.6% to 69.9%)  same runs" in refuse
 
 
 def test_rerun_resumes_and_makes_no_calls(
@@ -79,10 +88,10 @@ def test_rerun_resumes_and_makes_no_calls(
     capsys.readouterr()
     assert lab_run(tmp_path) == 0
     out = capsys.readouterr().out
-    assert "6 runs, 6 already done, 0 to go" in out
+    assert "8 runs, 8 already done, 0 to go" in out
     assert "Done this invocation: 0 stored" in out
     db = sqlite3.connect(tmp_path / "runs.sqlite")
-    assert db.execute("SELECT count(*) FROM requests").fetchone() == (12,)  # first run only
+    assert db.execute("SELECT count(*) FROM requests").fetchone() == (15,)  # first run only
     db.close()
 
 

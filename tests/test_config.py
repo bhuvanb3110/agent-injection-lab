@@ -25,11 +25,11 @@ def test_baseline_is_16_tasks_by_both_groq_models_once() -> None:
     assert [s.model_id for s in specs[:2]] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
 
 
-def test_smoke_is_3_tasks_on_fake_models() -> None:
+def test_smoke_is_4_tasks_on_fake_models() -> None:
     config = load_experiment(EXPERIMENTS / "smoke.yaml")
     specs = expand(config, load_providers())
     assert {s.provider for s in specs} == {"fake"}
-    assert len({s.user_task_id for s in specs}) == 3
+    assert len({s.user_task_id for s in specs}) == 4
 
 
 def test_seed_is_base_plus_repeat() -> None:

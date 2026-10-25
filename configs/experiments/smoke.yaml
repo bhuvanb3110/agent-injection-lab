@@ -1,14 +1,17 @@
-# Smoke run: the whole pipeline on 3 Banking tasks with scripted FakeModels. No network, no key.
+# Smoke run: the whole pipeline on 4 Banking tasks with scripted FakeModels. No network, no key.
 # Used by CI (tests/test_smoke.py) and runnable locally: uv run lab run configs/experiments/smoke.yaml
 #
 # Two scripted models (lab/domains/agentdojo_bridge/scripted.py):
 #   ground-truth  plays each task's ground-truth tool calls, then its expected answer
 #   refuse        answers at once without calling a tool
+#
+# user_task_8 passes even for an agent that does nothing (D37), so the report's split into
+# discriminating tasks and the do-nothing floor is exercised (D39).
 name: smoke
-description: 3 Banking tasks, T1, scripted FakeModels; checks the plumbing, measures nothing.
+description: 4 Banking tasks, T1, scripted FakeModels; checks the plumbing, measures nothing.
 suite: banking
 topology: t1
-user_tasks: [user_task_0, user_task_1, user_task_2]
+user_tasks: [user_task_0, user_task_1, user_task_2, user_task_8]
 models:
   - provider: fake
     model_id: ground-truth

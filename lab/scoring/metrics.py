@@ -6,6 +6,9 @@ regenerates from the run store. Nothing is dropped:
   solved (D5, D21).
 - Runs that never got an outcome (InfraError, daily cap) are not in the store. The report shows
   them as pending; they are never scored.
+
+Utility is reported three ways (D39): on all runs (AgentDojo's own number), on runs of the
+discriminating tasks only (the headline), and the do-nothing floor on the same runs.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
+from lab.domains.agentdojo_bridge.banking import DO_NOTHING_PASSES
 from lab.domains.agentdojo_bridge.run_case import Outcome
 from lab.store import RunRecord
 
@@ -85,7 +89,9 @@ class GroupMetrics:
     provider: str
     model_id: str
     topology: str
-    benign_utility: Proportion
+    benign_utility: Proportion  # all runs
+    discriminating_utility: Proportion  # runs of tasks a do-nothing agent fails: the headline
+    do_nothing_floor: Proportion  # what a do-nothing agent scores on these same runs
     outcomes: dict[str, int]  # every outcome, by name
     model_errors: dict[str, int]  # max_iterations, no_final_answer, and model_error subtypes
     malformed_tool_calls: int  # total over all runs
@@ -116,15 +122,20 @@ class GroupMetrics:
         return sum(self.model_errors.values())
 
 
-def compute_metrics(records: Iterable[RunRecord]) -> list[GroupMetrics]:
+def compute_metrics(
+    records: Iterable[RunRecord], do_nothing_passes: frozenset[str] = DO_NOTHING_PASSES
+) -> list[GroupMetrics]:
+    """`do_nothing_passes`: user task IDs whose utility check passes with no action taken."""
     groups: dict[tuple[str, str, str], list[RunRecord]] = {}
     for record in records:
         key = (record.spec.provider, record.spec.model_id, record.spec.topology)
         groups.setdefault(key, []).append(record)
-    return [_group(key, runs) for key, runs in sorted(groups.items())]
+    return [_group(key, runs, do_nothing_passes) for key, runs in sorted(groups.items())]
 
 
-def _group(key: tuple[str, str, str], runs: list[RunRecord]) -> GroupMetrics:
+def _group(
+    key: tuple[str, str, str], runs: list[RunRecord], do_nothing_passes: frozenset[str]
+) -> GroupMetrics:
     provider, model_id, topology = key
     model_errors: Counter[str] = Counter()
     for run in runs:
@@ -133,6 +144,7 @@ def _group(key: tuple[str, str, str], runs: list[RunRecord]) -> GroupMetrics:
         elif run.outcome in MODEL_ERROR_OUTCOMES:
             model_errors[run.outcome] += 1
 
+    discriminating = [run for run in runs if run.spec.user_task_id not in do_nothing_passes]
     calls = [c for run in runs for c in run.calls]
     uncached_runs = [run for run in runs if run.calls and not any(c.cached for c in run.calls)]
     started = sorted(run.started_at for run in runs)
@@ -141,6 +153,10 @@ def _group(key: tuple[str, str, str], runs: list[RunRecord]) -> GroupMetrics:
         model_id=model_id,
         topology=topology,
         benign_utility=Proportion(successes=sum(run.utility for run in runs), n=len(runs)),
+        discriminating_utility=Proportion(
+            successes=sum(run.utility for run in discriminating), n=len(discriminating)
+        ),
+        do_nothing_floor=Proportion(successes=len(runs) - len(discriminating), n=len(runs)),
         outcomes=dict(sorted(Counter(run.outcome for run in runs).items())),
         model_errors=dict(sorted(model_errors.items())),
         malformed_tool_calls=sum(run.malformed_tool_calls for run in runs),

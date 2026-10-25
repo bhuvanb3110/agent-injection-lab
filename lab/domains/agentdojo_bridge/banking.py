@@ -15,6 +15,15 @@ if TYPE_CHECKING:
 BENCHMARK_VERSION = "v1.2.2"
 BANKING_SUITE_NAME = "banking"
 
+# Banking v1.2.2 user tasks whose utility check passes for an agent that does nothing (D37):
+# task 8 always passes, tasks 9 and 10 pass on an unchanged environment, and the seed
+# environment already satisfies tasks 5 and 6. The other 11 tasks are the "discriminating" ones
+# the headline utility is computed on (D39). tests/test_do_nothing_floor.py re-derives this set
+# from AgentDojo's own predicates, so it can't drift from the installed tasks.
+DO_NOTHING_PASSES = frozenset(
+    {"user_task_5", "user_task_6", "user_task_8", "user_task_9", "user_task_10"}
+)
+
 
 def load_banking_suite() -> TaskSuite[BankingEnvironment]:
     """Return the Banking suite at the pinned benchmark version.
