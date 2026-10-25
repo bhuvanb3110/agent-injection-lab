@@ -1,0 +1,19 @@
+# Smoke run: the whole pipeline on 3 Banking tasks with scripted FakeModels. No network, no key.
+# Used by CI (tests/test_smoke.py) and runnable locally: uv run lab run configs/experiments/smoke.yaml
+#
+# Two scripted models (lab/domains/agentdojo_bridge/scripted.py):
+#   ground-truth  plays each task's ground-truth tool calls, then its expected answer
+#   refuse        answers at once without calling a tool
+name: smoke
+description: 3 Banking tasks, T1, scripted FakeModels; checks the plumbing, measures nothing.
+suite: banking
+topology: t1
+user_tasks: [user_task_0, user_task_1, user_task_2]
+models:
+  - provider: fake
+    model_id: ground-truth
+  - provider: fake
+    model_id: refuse
+repeats: 1
+seed: 1000
+max_tokens: 2048

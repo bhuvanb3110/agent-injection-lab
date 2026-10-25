@@ -35,6 +35,9 @@ from lab.scheduler.spec import RunSpec
 from lab.store import RunRecord, RunStore
 
 RunFn = Callable[[RunSpec, RunContext], CaseResult]
+# Called once for every spec the queue handles, with what happened to it: the stored outcome
+# ("solved", "model_error/truncated", ...), "requeued", "deferred" or "daily cap".
+ProgressFn = Callable[[RunSpec, str], None]
 DEFAULT_MAX_REQUEUES = 1
 
 
@@ -78,8 +81,15 @@ class Scheduler:
         self.provenance = provenance
         self.max_requeues = max_requeues
 
-    def run(self, specs: Iterable[RunSpec]) -> SchedulerReport:
+    def run(
+        self, specs: Iterable[RunSpec], progress: ProgressFn | None = None
+    ) -> SchedulerReport:
         report = SchedulerReport()
+
+        def tell(spec: RunSpec, event: str) -> None:
+            if progress is not None:
+                progress(spec, event)
+
         queue: deque[RunSpec] = deque()
         seen: set[str] = set()
         for spec in specs:
@@ -97,6 +107,7 @@ class Scheduler:
             model = f"{spec.provider}/{spec.model_id}"
             if model in report.stopped_models:
                 report.not_started.append(spec.run_id)
+                tell(spec, "daily cap")
                 continue
 
             ctx = RunContext(repeat_idx=spec.repeat_idx)
@@ -108,14 +119,17 @@ class Scheduler:
                 # calls then come from the cache).
                 report.stopped_models[f"{e.provider}/{e.model_id}"] = str(e)
                 report.not_started.append(spec.run_id)
+                tell(spec, "daily cap")
                 continue
             except InfraError:
                 requeues[spec.run_id] += 1
                 if requeues[spec.run_id] <= self.max_requeues:
                     report.requeues += 1
                     queue.append(spec)
+                    tell(spec, "requeued")
                 else:
                     report.deferred.append(spec.run_id)
+                    tell(spec, "deferred")
                 continue
             except ModelError as e:
                 record = self._record(spec, ctx, started, model_error=e)
@@ -123,6 +137,8 @@ class Scheduler:
                 record = self._record(spec, ctx, started, result=result)
             self.store.save_run(record)
             report.completed.append(spec.run_id)
+            subtype = f"/{record.outcome_subtype}" if record.outcome_subtype else ""
+            tell(spec, record.outcome + subtype)
         return report
 
     def _record(

@@ -9,11 +9,31 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import date
 from typing import Any
 
+from lab.models.providers import Limits, ModelInfo, Price, Sampling
 from lab.models.types import ModelRequest, ModelResponse, RawToolCall
 
 Step = ModelResponse | Exception
+
+# Experiment configs name the FakeModel as provider "fake". It is not in providers.yaml: it has
+# no URL, no key, no limits and no price.
+FAKE_PROVIDER = "fake"
+
+
+def fake_model_info() -> ModelInfo:
+    """The FakeModel's entry in place of a providers.yaml one: free, unlimited, temperature 0."""
+    checked = date(2026, 10, 25)
+    return ModelInfo(
+        tool_calling=True,
+        price=Price(input_per_mtok=0.0, output_per_mtok=0.0, source="fake", checked=checked),
+        limits=Limits(
+            rpm=None, rpd=None, tpm=None, tpd=None, source="fake", checked=checked,
+            verified_for_free_plan=True,
+        ),
+        sampling=Sampling(temperature=0.0, reasoning_effort=None, source="fake", checked=checked),
+    )
 
 
 class FakeModel:
