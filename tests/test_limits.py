@@ -126,7 +126,8 @@ def test_estimate_reserves_output_like_groq_does() -> None:
     unset = estimate_tokens(ModelRequest(**base))  # type: ignore[arg-type]
     small = estimate_tokens(ModelRequest(**base, max_tokens=50))  # type: ignore[arg-type]
     large = estimate_tokens(ModelRequest(**base, max_tokens=2048))  # type: ignore[arg-type]
-    assert unset.input_tokens == small.input_tokens > 1000 / 2.6  # errs high
+    # Errs high: the densest baseline call was 5.5 characters per token (D42).
+    assert unset.input_tokens == small.input_tokens > 1000 / 5.5
     assert unset.total_tokens == unset.input_tokens + OUTPUT_RESERVE
     assert small.total_tokens == small.input_tokens + 50
     assert large.total_tokens == large.input_tokens + OUTPUT_RESERVE

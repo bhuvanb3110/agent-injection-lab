@@ -35,9 +35,12 @@ MINUTE_S = 60.0
 DAY_S = 86_400.0
 DEFAULT_MAX_WAIT_S = 120.0
 
-# Calibrated on the 2026-10-25 probe: 386 characters of request JSON were 148 prompt tokens on
-# Groq, i.e. 2.6 characters per token. Rounded down so the estimate errs high (D22).
-CHARS_PER_TOKEN = 2.5
+# Calibrated on the 111 Groq calls of the milestone-1 baseline (D42): 7.4 characters of request
+# JSON per prompt token overall, 5.5 for the densest call. 5.0 sits below every call measured,
+# so the estimate errs high (D22). It is only the pre-send guess: after the call it is replaced
+# by the reported usage, and Groq's remaining-tokens header still overrides it when stricter.
+# The one-tool probe gave 2.6 (D20), which made earlier estimates about 3x too high (D41).
+CHARS_PER_TOKEN = 5.0
 # How Groq charges tokens/minute, from the 2026-10-25 max_tokens probe (D28): at admission it
 # takes prompt + min(max_tokens, its own output estimate). With max_tokens=256 the header drop
 # was exactly prompt + 256; with 2048 it was prompt + 324 and prompt + 409, nowhere near 2048.
