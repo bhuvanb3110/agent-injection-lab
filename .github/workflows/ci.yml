@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # No secrets are passed: CI never calls a real model. Network is only used to install
+    # pinned dependencies; tests/conftest.py blocks sockets during the test run (DECISIONS.md D10).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv (pinned)
+        run: pipx install uv==0.13.5
+
+      - name: Install dependencies from the lockfile
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy lab
+
+      - name: Tests
+        run: uv run pytest
