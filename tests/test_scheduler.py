@@ -9,15 +9,12 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline
-from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
-from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop
 
 from lab.domains.agentdojo_bridge import BENCHMARK_VERSION, load_banking_suite, run_case
 from lab.domains.agentdojo_bridge.run_case import CaseResult
 from lab.errors import InfraError, ModelError
 from lab.models.fake import FakeModel, Step, answer, call
-from lab.models.llm_element import LabLLM, LabToolsExecutor
+from lab.models.llm_element import LabLLM
 from lab.models.providers import Limits
 from lab.models.types import ModelResponse, RunContext
 from lab.scheduler.clock import FakeClock
@@ -26,6 +23,7 @@ from lab.scheduler.queue import Provenance, Scheduler, SchedulerReport
 from lab.scheduler.retry import RetryPolicy, ScheduledClient
 from lab.scheduler.spec import RunSpec
 from lab.store import RunStore
+from lab.topologies.t1 import build_t1
 
 PROVIDER, MODEL = "groq", "openai/gpt-oss-20b"
 READ_BILL = {"file_path": "bill-december-2023.txt"}
@@ -105,10 +103,7 @@ class Lab:
             llm = LabLLM(client, provider=s.provider, model_id=s.model_id,
                          temperature=s.temperature, max_tokens=s.max_tokens,
                          reasoning_effort=s.reasoning_effort, seed=s.seed)
-            pipeline = AgentPipeline([
-                SystemMessage("You are a helpful banking assistant."), InitQuery(), llm,
-                ToolsExecutionLoop([LabToolsExecutor(), llm]),
-            ])
+            pipeline = build_t1(llm, system_message="You are a helpful banking assistant.")
             return run_case(self.suite, pipeline, self.suite.get_user_task_by_id(s.user_task_id),
                             ctx)
 
@@ -286,8 +281,7 @@ def test_other_models_keep_going_when_one_is_capped(tmp_path: Path, cap: str) ->
         limiter = lab.limiter if s.model_id == MODEL else other_limiter
         client = ScheduledClient(FakeModel(solve()), limiter, lab.clock)
         llm = LabLLM(client, provider=s.provider, model_id=s.model_id)
-        pipeline = AgentPipeline([SystemMessage("x"), InitQuery(), llm,
-                                  ToolsExecutionLoop([LabToolsExecutor(), llm])])
+        pipeline = build_t1(llm, system_message="x")
         return run_case(lab.suite, pipeline, lab.suite.get_user_task_by_id(s.user_task_id), ctx)
 
     report = Scheduler(lab.store, run_fn, lab.clock, PROVENANCE).run([capped, free])
