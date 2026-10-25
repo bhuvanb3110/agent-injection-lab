@@ -108,7 +108,7 @@ tests/                    see Verification
 ## 6. Build order (slices)
 1. **Project skeleton + Banking bridge + `run_case` + ground-truth parity test** (16/16). CI.
 2. **Model client** (OpenAI-compatible + FakeClient), `LabLLM`, cache.
-3. **Scheduler** (limits, backoff, infrastructure errors), runner, store, resume.
+3. **Scheduler** (limits, backoff, infrastructure errors), runner, store, resume. *Done 2026-10-25; layout in DECISIONS.md D22-D26.*
 4. **Metrics, report, CLI, configs**, FakeModel smoke run in CI.
 5. **Real runs on Groq** (large + small), handoff.
 

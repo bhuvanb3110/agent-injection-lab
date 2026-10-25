@@ -182,3 +182,55 @@ One entry per design decision: what was decided, why, and what was rejected. New
   - The calls made before the error are kept.
   - `max_iterations` and `no_final_answer` remain their own outcomes. They are also model errors under D5, so the report groups all three in its model-error breakdown.
 - **Why:** This settles the open point in D11. Retrying the same request would fail the same way, so re-queueing would loop forever. Dropping the run would bias utility upward, which CLAUDE.md forbids.
+
+### D22. Rate limiting: four sliding windows per model, plus the provider's headers (2026-10-25)
+- **Decision:** `lab/scheduler/limits.py:RateLimiter`, one per model.
+  - It logs every request it lets through as (time, tokens).
+  - Before the next request it checks requests and tokens over the last 60 s against RPM and TPM, and over the last 24 h against RPD and TPD.
+  - When the last response carried Groq's headers, it also obeys remaining tokens per minute and remaining requests per day (D20), and takes the stricter of the two counts.
+- **Token estimate before sending:** request JSON length / 2.5, plus an output reserve. The reserve is `max_tokens`, or 1024 (Groq's default for reasoning models) if `max_tokens` isn't set. The probe measured 2.6 characters per token; rounding down to 2.5 makes the estimate err high.
+  - After the call, the estimate is replaced by the reported input + output tokens.
+  - A 429 counts 0 tokens, because Groq refused it before doing any work.
+  - Other failures count the input estimate, because the prompt may have been processed.
+- **Persistence:** every real request goes into the `requests` table of the run store. A new invocation seeds its limiter from the last 24 h of that table. Without this, a restart would forget the day's usage and blow through TPD.
+- **Why sliding windows:** they are simple to explain and test, and never more permissive than a fixed "midnight" reset. Groq's own windows appear to refill gradually (D20), so a sliding window is the closer model.
+- **Rejected:** trusting the headers alone. They cover only two of the four limits.
+
+### D23. One retry policy, for InfraError only, applied per call (2026-10-25)
+- **Decision:** `lab/scheduler/retry.py:ScheduledClient` wraps the provider client, inside the cache: `LabLLM -> CachingClient -> ScheduledClient -> OpenAICompatClient`. A cache hit therefore never waits for or uses up a limit.
+  - It retries `InfraError` up to 5 attempts in total.
+  - After failed attempt n, it waits a random time in [d/2, d], where d = min(60 s, 2 s × 2^(n−1)) ("equal jitter").
+  - If the provider sent `Retry-After`, it waits at least that long.
+  - `ModelError` and `ConfigError` are never retried.
+- **Long waits:** when a 429 asks for a wait longer than `max_wait_s` (120 s), the client raises `DailyCapReached` instead of sleeping. This is how a tokens/day 429 from Groq ends up as a clean stop, even when our own TPD count missed it.
+- **Why per call, not per run:** retrying the whole run would redo calls that already succeeded and spend tokens twice. A retried call sends the identical request.
+- **Attempts:** each `CallRecord` stores its `attempts` (1 plus retries, 0 for a cache hit). The run's `requests_sent` is their sum, so retries are counted, never hidden.
+
+### D24. Run ID = sha256 of the RunSpec; provenance is recorded but not hashed (2026-10-25)
+- **Decision:** A `RunSpec` holds experiment, suite, benchmark version, user task, topology, provider, model ID, temperature, reasoning_effort, max_tokens and repeat index. The run ID is sha256 of its canonical JSON.
+  - Re-running a spec is idempotent: a stored run ID is skipped.
+  - Duplicate specs in one queue are run once.
+- **Not in the hash:** git commit, agentdojo package version and date. They are stored on every run but kept out of the ID, so a new commit doesn't make every finished run look new.
+  - The agentdojo version is pinned (D3), so it can't drift silently.
+  - Anything that does change the task (benchmark version, sampling) *is* in the spec.
+- **Seed:** stored as `null`, because we send no seed. Groq picks its own per request (the probe's `x_groq.seed` changed between calls). This is an open question for Bhuvan.
+
+### D25. Run store: runs, calls and requests in one SQLite file, insert-only (2026-10-25)
+- **Decision:** `lab/store.py:RunStore` has three tables:
+  - `runs`: one row per scored run. It has every field in BRIEF §9: config hash, git commit, provider, model ID, date, seed, full trace, tokens, cost, latency, outcome, failure label. It also has the agentdojo version, benchmark version, temperature, reasoning_effort, max_tokens, repeat index, outcome subtype, state check, call and cache counts, reasoning tokens and malformed tool calls.
+  - `calls`: one row per model call, as flat columns plus the full `CallRecord` JSON.
+  - `requests`: every real provider request, including failed attempts.
+- **Insert only:** a duplicate run ID raises an error, because rerunning a stored run is a bug.
+- **Totals:** a run's token or cost total is `null` if any call lacks that number. It is never guessed.
+- **Failed runs:** a run that ended in InfraError or a daily cap has no `runs` row. It was never scored. Its requests are still in `requests`, so the cost of failures stays visible.
+- **The trace:** messages are stored as JSON, with `FunctionCall` objects dumped by pydantic. A `model_error` run has no transcript, because AgentDojo's pipeline raises before returning messages. Its calls are kept.
+
+### D26. The scheduler queue: sequential, per-model stop, bounded re-queue (2026-10-25)
+- **Decision:** `lab/scheduler/queue.py:Scheduler.run(specs)` runs each pending spec through an injected `run_fn(spec, ctx)` and decides by how the run ended:
+  - **A `CaseResult`:** stored.
+  - **`ModelError`:** stored as `model_error` (D21).
+  - **`InfraError` after retries:** not stored. The run goes to the back of the queue, at most `max_requeues` (1) times per invocation, then stays pending for a later invocation. This stops an outage from turning into an endless loop.
+  - **`DailyCapReached`:** the run is abandoned unscored, and runs for *that model* are skipped for the rest of the invocation. Other models carry on, since limits are per model. A later invocation restarts the abandoned run from scratch, with a fresh environment. Its earlier calls then come from the cache.
+  - **`ConfigError` or any other exception:** raised, which stops the experiment.
+- **Why sequential:** one run at a time keeps the limiter, the store and the trace order simple. The cost is idle time while one model is throttled. Running models in parallel can come later if wall time becomes the bottleneck.
+- **Deviation from PLAN_M1 §3:** the planned `lab/runner.py` and `lab/scheduler/limits.py` became `lab/scheduler/{clock,limits,retry,spec,queue}.py`. Expanding an experiment config into RunSpecs moves to slice 4, together with the config loader and the CLI.
