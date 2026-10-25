@@ -1,0 +1,74 @@
+"""FakeModel: a ChatClient that replays scripted responses. Used by tests and the CI smoke run.
+
+It never touches the network. Each `complete()` pops the next scripted step; a step can be a
+response or an exception (to script a 429, for example). Running out of script is an error,
+so a test can't pass by accident after the model "stops talking".
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from typing import Any
+
+from lab.models.types import ModelRequest, ModelResponse, RawToolCall
+
+Step = ModelResponse | Exception
+
+
+class FakeModel:
+    def __init__(self, script: Iterable[Step]) -> None:
+        self._script = list(script)
+        self.requests: list[ModelRequest] = []
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        if not self._script:
+            raise AssertionError(f"FakeModel script exhausted after {len(self.requests) - 1} calls")
+        step = self._script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    @property
+    def remaining(self) -> int:
+        return len(self._script)
+
+
+def answer(text: str | None) -> ModelResponse:
+    """A final answer. `None` scripts an assistant turn with no content."""
+    return _response(content=text, tool_calls=[], finish_reason="stop")
+
+
+def call(name: str, args: dict[str, Any], *, call_id: str | None = None) -> ModelResponse:
+    """One well-formed tool call."""
+    return calls((name, json.dumps(args), call_id))
+
+
+def malformed_call(name: str, raw_arguments: str, *, call_id: str | None = None) -> ModelResponse:
+    """One tool call whose arguments are given as raw (possibly invalid) JSON text."""
+    return calls((name, raw_arguments, call_id))
+
+
+def calls(*specs: tuple[str, str, str | None]) -> ModelResponse:
+    """Several tool calls in one turn, each as (name, raw_arguments, call_id or None)."""
+    tool_calls = [
+        RawToolCall(id=call_id or f"call_{name}_{i}", name=name, arguments=raw)
+        for i, (name, raw, call_id) in enumerate(specs)
+    ]
+    return _response(content=None, tool_calls=tool_calls, finish_reason="tool_calls")
+
+
+def _response(
+    *, content: str | None, tool_calls: list[RawToolCall], finish_reason: str
+) -> ModelResponse:
+    # Fixed small numbers so token and cost accounting can be tested end to end.
+    return ModelResponse(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=finish_reason,
+        input_tokens=10,
+        output_tokens=5,
+        latency_s=0.0,
+        cost_usd=0.0,
+    )
