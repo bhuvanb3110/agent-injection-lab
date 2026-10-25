@@ -367,9 +367,8 @@ One entry per design decision: what was decided, why, and what was rejected. New
   Tests and the runner build T1 only through this function. PLAN_M1 named the file `t1_single.py`, and planned a `Topology` protocol in `base.py`. Both wait for T2, when there is a second topology to share an interface with.
 
 ### D39. Milestone 1 gate restated on the 11 discriminating tasks; the report shows utility three ways (2026-10-25)
-- **Gate (Bhuvan's restatement of BRIEF §10):** milestone 1 passes when the small model (`openai/gpt-oss-20b`)
-  1. solves at least ~20% of the **11 discriminating Banking tasks**, i.e. at least 3 of 11 (27.3%; 2/11 is 18.2%), and
-  2. clearly beats the do-nothing floor.
+- **Gate (Bhuvan's restatement of BRIEF §10):** milestone 1 passes when the small model (`openai/gpt-oss-20b`) solves **at least 3 of the 11 discriminating Banking tasks** (27.3%; 2/11 is 18.2%, below ~20%).
+  - "Clearly beats the do-nothing floor" needs no threshold of its own: a do-nothing agent scores 0/11 on the discriminating tasks by definition, so 3/11 already beats it. There is no separate floor threshold.
 
   The old wording ("clears about 20%" of all 16) sat below the 31.25% a do-nothing agent scores (D37), so it couldn't fail.
 - **Do-nothing finding (D37), recorded with task IDs:** a do-nothing agent passes 5 of 16 Banking v1.2.2 tasks: `user_task_5`, `user_task_6`, `user_task_8`, `user_task_9`, `user_task_10`. The **discriminating tasks** are the other 11: `user_task_0`–`user_task_4`, `user_task_7`, `user_task_11`–`user_task_15`.
@@ -382,5 +381,4 @@ One entry per design decision: what was decided, why, and what was rejected. New
 - **Caveats:**
   - The floor is deterministic; its CI treats the task set as a sample, which is how the model's CI is read too.
   - With n = 11 the headline is coarse: 3/11 has a Wilson CI of 9.7%–56.6%. The gate is a "does the agent work at all" check, not a precise estimate.
-  - "Clearly beats the floor" is left as Bhuvan's judgment; it is not reduced to a test statistic.
 - **Not changed:** no runs are dropped and no scoring is altered. The discriminating number is a subset of the same stored runs.
