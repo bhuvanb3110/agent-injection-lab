@@ -34,6 +34,9 @@ class Outcome(StrEnum):
     # Model errors: count as not solved, reported as a separate breakdown.
     MAX_ITERATIONS = "max_iterations"  # stopped with tool calls still pending
     NO_FINAL_ANSWER = "no_final_answer"  # final assistant message has content=None
+    # The provider raised ModelError mid-run. Never returned by run_case (the error
+    # propagates); the scheduler records it, with a subtype (D21).
+    MODEL_ERROR = "model_error"
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,7 @@ MILLION_IN_TWO_MILLION_OUT = {
 Handler = Callable[[httpx2.Request], httpx2.Response]
 
 
-def completion(message: dict[str, Any], usage: dict[str, int] | None = None) -> dict[str, Any]:
+def completion(message: dict[str, Any], usage: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": "chatcmpl-1",
         "object": "chat.completion",
