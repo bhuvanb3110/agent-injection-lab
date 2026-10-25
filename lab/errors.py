@@ -32,9 +32,18 @@ class ModelError(Exception):
     Retrying the same request would fail the same way, so it is not re-queued.
     """
 
-    def __init__(self, message: str, *, provider: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str,
+        subtype: str,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.provider = provider
+        # Stored as the run's outcome subtype (D21): "http_400", "no_choices", ...
+        self.subtype = subtype
         self.status_code = status_code
 
 

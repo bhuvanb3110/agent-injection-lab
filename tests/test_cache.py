@@ -11,7 +11,7 @@ from lab.models.cache import CachingClient, ResponseCache, request_key
 from lab.models.client import OpenAICompatClient
 from lab.models.fake import FakeModel, answer
 from lab.models.providers import load_providers
-from lab.models.types import ModelRequest, ModelResponse
+from lab.models.types import ModelRequest, ModelResponse, RateLimitHeaders
 
 SECRET = "gsk_test_secret_value_do_not_leak_123"
 
@@ -64,6 +64,7 @@ def test_key_changes_with_every_field_that_matters() -> None:
         request(temperature=0.7),
         request(max_tokens=256),
         request(repeat_idx=1),  # repeats are independent samples, not replays
+        request(reasoning_effort="medium"),
     ]
     keys = {request_key(v) for v in variants}
     assert base not in keys
@@ -139,3 +140,15 @@ def test_secret_never_reaches_key_or_cache_file(tmp_path: Path) -> None:
     on_disk = b"".join(p.read_bytes() for p in tmp_path.iterdir())  # db plus any WAL files
     assert b"Pay my bill." in on_disk  # sanity: the request really was written
     assert SECRET.encode() not in on_disk
+
+
+def test_rate_limit_headers_are_not_cached(tmp_path: Path) -> None:
+    # Headers describe the provider at call time, not the response; a hit must not replay them.
+    cache = ResponseCache(tmp_path / "cache.sqlite")
+    with_headers = answer("hi").model_copy(
+        update={"rate_limits": RateLimitHeaders(remaining_tokens_per_minute=5)}
+    )
+    cache.put(request(), with_headers)
+    hit = cache.get(request())
+    assert hit is not None and hit.rate_limits is None
+    cache.close()

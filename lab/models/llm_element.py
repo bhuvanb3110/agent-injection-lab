@@ -38,6 +38,7 @@ from agentdojo.types import (
 
 from lab.models.cache import request_key
 from lab.models.client import ChatClient
+from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
 
 
@@ -65,12 +66,14 @@ class LabLLM(BasePipelineElement):
         model_id: str,
         temperature: float = 0.0,
         max_tokens: int | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> None:
         self.client = client
         self.provider = provider
         self.model_id = model_id
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
         self.name = f"{provider}/{model_id}"
 
     def query(
@@ -95,6 +98,7 @@ class LabLLM(BasePipelineElement):
             tools=[function_to_openai(f) for f in runtime.functions.values()],
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
             repeat_idx=ctx.repeat_idx,
         )
         response = self.client.complete(request)
@@ -109,6 +113,7 @@ class LabLLM(BasePipelineElement):
                 cached=response.cached,
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
+                reasoning_tokens=response.reasoning_tokens,
                 latency_s=response.latency_s,
                 cost_usd=response.cost_usd,
                 finish_reason=response.finish_reason,

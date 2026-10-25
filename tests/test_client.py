@@ -8,7 +8,7 @@ import httpx2
 import pytest
 
 from lab.errors import ConfigError, InfraError, ModelError
-from lab.models.client import OpenAICompatClient
+from lab.models.client import OpenAICompatClient, parse_duration_s
 from lab.models.providers import load_providers
 from lab.models.types import ModelRequest
 
@@ -121,6 +121,7 @@ def test_400_raises_model_error() -> None:
     with pytest.raises(ModelError) as info:
         client.complete(request())
     assert info.value.status_code == 400
+    assert info.value.subtype == "http_400"  # stored as the outcome subtype (D21)
 
 
 @pytest.mark.parametrize("code", [401, 403, 404])
@@ -185,3 +186,73 @@ def test_parses_content_tool_calls_tokens_and_cost() -> None:
     assert response.cost_usd == pytest.approx(0.075 + 2 * 0.30)
     assert response.latency_s >= 0
     assert not response.cached
+
+
+# Shape and headers recorded from the 2026-10-25 probe of gpt-oss-120b on Groq (D18, D20).
+GROQ_USAGE = {
+    "prompt_tokens": 148,
+    "completion_tokens": 63,
+    "total_tokens": 211,
+    "completion_tokens_details": {"reasoning_tokens": 36},
+}
+GROQ_HEADERS = {
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-limit-tokens": "8000",
+    "x-ratelimit-remaining-requests": "999",
+    "x-ratelimit-remaining-tokens": "7578",
+    "x-ratelimit-reset-requests": "1m26.4s",
+    "x-ratelimit-reset-tokens": "3.165s",
+}
+
+
+def test_sends_reasoning_effort_only_when_set() -> None:
+    client, recorder = make_client(
+        lambda _: httpx2.Response(200, json=completion({"role": "assistant", "content": "hi"}))
+    )
+    client.complete(request(reasoning_effort="medium", temperature=0.6))
+    client.complete(request())
+    assert recorder.body(0)["reasoning_effort"] == "medium"
+    assert recorder.body(0)["temperature"] == 0.6
+    assert "reasoning_effort" not in recorder.body(1)  # Ollama doesn't take it
+
+
+def test_reasoning_tokens_are_part_of_output_tokens_and_cost() -> None:
+    message = {"role": "assistant", "content": "done", "reasoning": "think"}
+    client, _ = make_client(
+        lambda _: httpx2.Response(200, json=completion(message, GROQ_USAGE), headers=GROQ_HEADERS)
+    )
+    response = client.complete(request())
+    assert (response.input_tokens, response.output_tokens) == (148, 63)
+    assert response.reasoning_tokens == 36
+    # Cost is charged on completion_tokens, which already include reasoning (D19).
+    assert response.cost_usd == pytest.approx((148 * 0.075 + 63 * 0.30) / 1e6)
+
+
+def test_parses_groq_rate_limit_headers() -> None:
+    message = {"role": "assistant", "content": "hi"}
+    client, _ = make_client(
+        lambda _: httpx2.Response(200, json=completion(message), headers=GROQ_HEADERS)
+    )
+    limits = client.complete(request()).rate_limits
+    assert limits is not None
+    assert limits.remaining_requests_per_day == 999
+    assert limits.requests_reset_s == pytest.approx(86.4)
+    assert limits.remaining_tokens_per_minute == 7578
+    assert limits.tokens_reset_s == pytest.approx(3.165)
+
+
+def test_no_rate_limit_headers_gives_none() -> None:
+    client, _ = make_client(
+        lambda _: httpx2.Response(200, json=completion({"role": "assistant", "content": "hi"}))
+    )
+    assert client.complete(request()).rate_limits is None
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [("1m26.4s", 86.4), ("3.165s", 3.165), ("250ms", 0.25), ("2h0m1s", 7201.0), ("7", None),
+     ("soon", None), ("", None), (None, None)],
+)
+def test_parse_duration(text: str | None, seconds: float | None) -> None:
+    result = parse_duration_s(text)
+    assert result == (pytest.approx(seconds) if seconds is not None else None)

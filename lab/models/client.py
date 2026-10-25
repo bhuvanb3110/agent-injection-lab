@@ -13,6 +13,7 @@ One `chat.completions.create` call per `complete()`, nothing hidden:
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Mapping
 from typing import Any, Protocol
@@ -22,7 +23,7 @@ import openai
 
 from lab.errors import ConfigError, InfraError, ModelError
 from lab.models.providers import ProviderConfig
-from lab.models.types import ModelRequest, ModelResponse, RawToolCall
+from lab.models.types import ModelRequest, ModelResponse, RateLimitHeaders, RawToolCall
 
 # Ollama requires a key but ignores it.
 _NO_KEY_PLACEHOLDER = "unused"
@@ -80,10 +81,15 @@ class OpenAICompatClient:
             kwargs["tools"] = request.tools
         if request.max_tokens is not None:
             kwargs["max_tokens"] = request.max_tokens
+        if request.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = request.reasoning_effort
 
         start = time.perf_counter()
         try:
-            completion = self._sdk.chat.completions.create(**kwargs)
+            # with_raw_response also gives the headers (openai/_legacy_response.py:
+            # LegacyAPIResponse.headers); .parse() returns the same ChatCompletion as create().
+            raw = self._sdk.chat.completions.with_raw_response.create(**kwargs)
+            completion = raw.parse()
         except openai.APIConnectionError as e:  # includes APITimeoutError
             raise InfraError(f"{type(e).__name__}: {e}", provider=self.provider.name) from e
         except openai.APIStatusError as e:
@@ -91,7 +97,9 @@ class OpenAICompatClient:
         latency_s = time.perf_counter() - start
 
         if not completion.choices:
-            raise ModelError("Response has no choices", provider=self.provider.name)
+            raise ModelError(
+                "Response has no choices", provider=self.provider.name, subtype="no_choices"
+            )
         choice = completion.choices[0]
         message = choice.message
 
@@ -99,7 +107,9 @@ class OpenAICompatClient:
         for call in message.tool_calls or []:
             if call.type != "function":
                 raise ModelError(
-                    f"Unsupported tool call type {call.type!r}", provider=self.provider.name
+                    f"Unsupported tool call type {call.type!r}",
+                    provider=self.provider.name,
+                    subtype="unsupported_tool_call_type",
                 )
             tool_calls.append(
                 RawToolCall(id=call.id, name=call.function.name, arguments=call.function.arguments)
@@ -108,6 +118,8 @@ class OpenAICompatClient:
         usage = completion.usage
         input_tokens = usage.prompt_tokens if usage else None
         output_tokens = usage.completion_tokens if usage else None
+        details = usage.completion_tokens_details if usage else None
+        reasoning_tokens = details.reasoning_tokens if details else None
         cost_usd = (
             model.price.cost_usd(input_tokens, output_tokens)
             if input_tokens is not None and output_tokens is not None
@@ -122,8 +134,10 @@ class OpenAICompatClient:
             reasoning=reasoning if isinstance(reasoning, str) else None,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
             latency_s=latency_s,
             cost_usd=cost_usd,
+            rate_limits=rate_limit_headers(raw.headers),
         )
 
     def _status_error(self, e: openai.APIStatusError) -> Exception:
@@ -140,7 +154,9 @@ class OpenAICompatClient:
             )
         if status in _CONFIG_STATUSES:
             return ConfigError(message)
-        return ModelError(message, provider=self.provider.name, status_code=status)
+        return ModelError(
+            message, provider=self.provider.name, subtype=f"http_{status}", status_code=status
+        )
 
 
 def _read_api_key(provider: ProviderConfig, environ: Mapping[str, str]) -> str:
@@ -161,3 +177,35 @@ def _retry_after_s(response: httpx2.Response) -> float | None:
         return float(value)
     except ValueError:
         return None  # HTTP-date form; the scheduler falls back to its own backoff
+
+
+def rate_limit_headers(headers: Mapping[str, str]) -> RateLimitHeaders | None:
+    """Parse Groq's x-ratelimit-* headers; None if the provider sent none of them (Ollama)."""
+    parsed = RateLimitHeaders(
+        remaining_requests_per_day=_int_or_none(headers.get("x-ratelimit-remaining-requests")),
+        requests_reset_s=parse_duration_s(headers.get("x-ratelimit-reset-requests")),
+        remaining_tokens_per_minute=_int_or_none(headers.get("x-ratelimit-remaining-tokens")),
+        tokens_reset_s=parse_duration_s(headers.get("x-ratelimit-reset-tokens")),
+    )
+    return None if parsed == RateLimitHeaders() else parsed
+
+
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+_UNIT_S = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+
+
+def parse_duration_s(value: str | None) -> float | None:
+    """Parse durations like "1m26.4s", "3.165s" or "250ms" into seconds; None if unparseable."""
+    if not value:
+        return None
+    parts = _DURATION_PART.findall(value)
+    if "".join(number + unit for number, unit in parts) != value.strip():
+        return None
+    return sum(float(number) * _UNIT_S[unit] for number, unit in parts)
+
+
+def _int_or_none(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
