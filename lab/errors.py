@@ -1,8 +1,9 @@
 """Typed errors that decide what happens to a run (DECISIONS.md D5, D11).
 
 None of these is ever converted into a score inside a run. They propagate out of `run_case`
-and the runner decides: re-queue (InfraError), record as a model error (ModelError), or stop
-the experiment (ConfigError).
+and the scheduler decides: re-queue (InfraError), record as outcome "model_error" (ModelError,
+D21), stop sending to that model until a later invocation (DailyCapReached), or stop the
+experiment (ConfigError).
 """
 
 
@@ -45,6 +46,20 @@ class ModelError(Exception):
         # Stored as the run's outcome subtype (D21): "http_400", "no_choices", ...
         self.subtype = subtype
         self.status_code = status_code
+
+
+class DailyCapReached(Exception):
+    """A model's free-tier allowance is used up for longer than the scheduler will wait.
+
+    Raised by the scheduler's limiter, never by a provider. The run in progress is not scored
+    and stays pending; the scheduler stops sending to this model so a later invocation resumes.
+    """
+
+    def __init__(self, message: str, *, provider: str, model_id: str, wait_s: float) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.model_id = model_id
+        self.wait_s = wait_s  # how long the limit says to wait
 
 
 class ConfigError(Exception):

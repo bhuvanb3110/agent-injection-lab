@@ -111,6 +111,7 @@ class LabLLM(BasePipelineElement):
                 model_id=self.model_id,
                 request_key=request_key(request),
                 cached=response.cached,
+                attempts=response.attempts,
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 reasoning_tokens=response.reasoning_tokens,

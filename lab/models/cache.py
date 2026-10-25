@@ -54,7 +54,9 @@ class ResponseCache:
         if row is None:
             return None
         # Latency, tokens and cost stay those of the original call; only the flag changes.
-        return ModelResponse.model_validate_json(row[0]).model_copy(update={"cached": True})
+        return ModelResponse.model_validate_json(row[0]).model_copy(
+            update={"cached": True, "attempts": 0}
+        )
 
     def put(self, request: ModelRequest, response: ModelResponse) -> None:
         stored = response.model_copy(update={"cached": False})

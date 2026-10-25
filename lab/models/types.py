@@ -71,6 +71,9 @@ class ModelResponse(BaseModel):
     # For the scheduler only: describes the provider's state when the call was made, not the
     # response, so it is excluded from the cache.
     rate_limits: RateLimitHeaders | None = Field(default=None, exclude=True)
+    # Real requests it took: 1 plus retries, 0 for a cache hit. Set by ScheduledClient and
+    # CachingClient; not cached, for the same reason.
+    attempts: int = Field(default=1, exclude=True)
 
 
 class CallRecord(BaseModel):
@@ -80,6 +83,7 @@ class CallRecord(BaseModel):
     model_id: str
     request_key: str  # hash of the ModelRequest; the cache key, also used to link traces
     cached: bool
+    attempts: int = 1  # real requests behind this call: retries included, 0 for a cache hit
     input_tokens: int | None
     output_tokens: int | None
     reasoning_tokens: int | None = None
