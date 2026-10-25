@@ -1,9 +1,9 @@
 # Milestone 1 plan — Setup and baseline (Banking + T1)
 
-Approved 2026-10-25. This copy includes the four changes made after approval (section 0); each is recorded in `DECISIONS.md`.
+Approved 2026-10-25. This copy includes the changes made after approval (section 0); each is recorded in `DECISIONS.md`.
 
 ## Context
-BRIEF §10 milestone 1: run AgentDojo Banking end to end with T1 (single agent), on one free large model and one small model, through our own scheduler and cache. Exit criterion: benign utility measured for both models, and the small model clears roughly 20% or gets swapped. The module seams chosen here are what T2–T5 (milestone 2) and the defenses (milestone 4) plug into. Source read: agentdojo **0.1.35**, installed in `.venv` (Python 3.11.7).
+BRIEF §10 milestone 1: run AgentDojo Banking end to end with T1 (single agent), on one free large model and one small model, through our own scheduler and cache. Exit criterion (restated 2026-10-25, DECISIONS.md D39): benign utility measured for both models, and the small model solves at least ~20% of the 11 discriminating Banking tasks (at least 3 of 11) and clearly beats the do-nothing floor, or gets swapped. A do-nothing agent passes 5 of 16 tasks (`user_task_5`, `6`, `8`, `9`, `10`; 31.25%, D37), so the original "about 20% of all tasks" could not fail; the discriminating tasks are the 11 it fails. The module seams chosen here are what T2–T5 (milestone 2) and the defenses (milestone 4) plug into. Source read: agentdojo **0.1.35**, installed in `.venv` (Python 3.11.7).
 
 ## 0. Changes after approval
 1. **Two kinds of error.**
@@ -12,6 +12,7 @@ BRIEF §10 milestone 1: run AgentDojo Banking end to end with T1 (single agent),
 2. **Malformed tool-call JSON** is returned to the model as a tool error it can recover from, and counted per run. It never crashes the run.
 3. **Each case runs exactly once.** There are no AgentDojo-style reruns on a changed environment; "no final output" is a recorded outcome.
 4. **The CI smoke run uses the FakeModel.** The Ollama smoke run is optional and local only.
+5. **The exit gate is restated on the 11 discriminating tasks** (D39). `lab report` shows, per model, utility on the discriminating tasks (headline), on all 16, and the do-nothing floor, each with a Wilson 95% CI.
 
 ## 1. How AgentDojo works (from installed source)
 
@@ -102,7 +103,7 @@ tests/                    see Verification
 
 ## 5. Open questions / risks
 - **Model IDs** (check current Groq docs and tool-calling support before pinning): `llama-3.3-70b-versatile` (large) and `llama-3.1-8b-instant` (small).
-- **Sample size.** Banking has only 16 user tasks, so a 95% CI on benign utility is about ±20 points even with repeats. That is fine for the ~20% gate but noisy for anything finer.
+- **Sample size.** Banking has only 16 user tasks, so a 95% CI on benign utility is about ±20 points even with repeats. The headline gate is on 11 tasks, where 3/11 has a Wilson CI of 9.7%–56.6%: fine as a "does it work at all" check, noisy for anything finer.
 - **Smoke config.** The brief asks for 2 topologies; milestone 1 has only T1.
 
 ## 6. Build order (slices)

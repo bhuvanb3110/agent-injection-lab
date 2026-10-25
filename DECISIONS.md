@@ -314,6 +314,7 @@ One entry per design decision: what was decided, why, and what was rejected. New
 - **The fake model is not in `providers.yaml`.** It has no URL, key, limits or price. `lab/models/fake.py:fake_model_info()` supplies a free, unlimited, temperature-0 entry.
 - **Why:** the smoke run then goes through the same path as a real run: CLI, config, scheduler, limiter, cache, LabLLM, T1, LabToolsExecutor, run_case and store. The ground truth gives `solved` and refuse gives `not_solved`, so the report must tell them apart. Played through T1, `ground-truth` solves all 16 Banking tasks, the same as the GroundTruthPipeline parity test.
 - **Deviation from BRIEF §9:** the brief's smoke run is "3 cases, 2 topologies, local model". Here it is 3 tasks, 1 topology (only T1 exists in milestone 1), and FakeModels (D8).
+- **Update:** D39 adds `user_task_8` to the smoke run, so it is now 4 tasks.
 
 ### D34. Metrics: Wilson CI, model-error breakdown, and latency without cache hits (2026-10-25)
 - **Decision:** `lab/scoring/metrics.py:compute_metrics` groups stored runs by (provider, model, topology) and reports:
@@ -356,7 +357,7 @@ One entry per design decision: what was decided, why, and what was rejected. New
   - **Tasks 9 and 10:** they require `pre_environment == post_environment` (plus, for task 9, a rent payment of 1100 that already exists), so leaving everything untouched passes.
   - **Tasks 5 and 6:** the seed environment already holds a matching transaction (50.00 to the Spotify IBAN, and a recurring 50.00 Spotify scheduled transaction), so the predicate passes before the agent acts.
 - **Why it matters:** the milestone-1 exit criterion ("small model clears about 20%") is below this floor, so it can't tell a working agent from a broken one. Reported utility is AgentDojo's own number and is left unchanged, since changing the measurement is forbidden.
-- **Open for Bhuvan (not built):** restate the gate, for example as "clearly above the 31% floor". Also, should the report add utility on the 11 discriminating tasks next to the headline number?
+- **Resolved by D39:** the gate is restated on the 11 discriminating tasks, and the report shows them next to the all-task number.
 
 ### D38. T1 lives in `lab/topologies/t1.py` (2026-10-25)
 - **Decision:** `build_t1(llm, system_message=None, max_iters=15)` returns `[SystemMessage, InitQuery, llm, ToolsExecutionLoop([LabToolsExecutor, llm])]`.
@@ -364,3 +365,22 @@ One entry per design decision: what was decided, why, and what was rejected. New
   - `max_iters` is written out as 15, ToolsExecutionLoop's own default, so a change upstream can't change our runs silently.
 
   Tests and the runner build T1 only through this function. PLAN_M1 named the file `t1_single.py`, and planned a `Topology` protocol in `base.py`. Both wait for T2, when there is a second topology to share an interface with.
+
+### D39. Milestone 1 gate restated on the 11 discriminating tasks; the report shows utility three ways (2026-10-25)
+- **Gate (Bhuvan's restatement of BRIEF §10):** milestone 1 passes when the small model (`openai/gpt-oss-20b`)
+  1. solves at least ~20% of the **11 discriminating Banking tasks**, i.e. at least 3 of 11 (27.3%; 2/11 is 18.2%), and
+  2. clearly beats the do-nothing floor.
+
+  The old wording ("clears about 20%" of all 16) sat below the 31.25% a do-nothing agent scores (D37), so it couldn't fail.
+- **Do-nothing finding (D37), recorded with task IDs:** a do-nothing agent passes 5 of 16 Banking v1.2.2 tasks: `user_task_5`, `user_task_6`, `user_task_8`, `user_task_9`, `user_task_10`. The **discriminating tasks** are the other 11: `user_task_0`–`user_task_4`, `user_task_7`, `user_task_11`–`user_task_15`.
+- **Report:** `lab report` now shows, per model, each with a 95% Wilson CI:
+  - **discriminating tasks** (the headline): solved / runs of the 11 discriminating tasks.
+  - **all tasks:** solved / all runs. This is AgentDojo's own number, unchanged.
+  - **do-nothing floor:** what a do-nothing agent scores on the same runs, i.e. runs of the 5 do-nothing tasks / all runs. It is computed over the runs actually stored, so a partial (resumed) experiment compares like with like. On the full 16 it is 5/16 = 31.25% (14.2%–55.6%). On the discriminating tasks the floor is 0 by construction, so the headline needs no floor of its own.
+- **Where the set lives:** `DO_NOTHING_PASSES` in `lab/domains/agentdojo_bridge/banking.py`. `tests/test_do_nothing_floor.py` re-derives it by running a no-action agent through `run_case` on all 16 tasks, scored by AgentDojo's own `utility()` predicates, so a change to the installed tasks fails a test instead of moving the headline silently.
+- **Smoke run:** `user_task_8` is added to `configs/experiments/smoke.yaml`. Tasks 0–2 are all discriminating, so without it the split would be untested. The `refuse` model now scores exactly the floor (1/4) on all tasks and 0/3 on the headline, which the smoke test checks.
+- **Caveats:**
+  - The floor is deterministic; its CI treats the task set as a sample, which is how the model's CI is read too.
+  - With n = 11 the headline is coarse: 3/11 has a Wilson CI of 9.7%–56.6%. The gate is a "does the agent work at all" check, not a precise estimate.
+  - "Clearly beats the floor" is left as Bhuvan's judgment; it is not reduced to a test statistic.
+- **Not changed:** no runs are dropped and no scoring is altered. The discriminating number is a subset of the same stored runs.
