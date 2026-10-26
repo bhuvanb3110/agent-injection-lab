@@ -2,7 +2,7 @@
 
 Research harness measuring whether layers of multi-agent oversight make tool-using agents safer against prompt injection, or just add more places for attacks to enter. The full spec is `docs/BRIEF.md`. Read the sections relevant to the current task before writing code.
 
-**Current milestone: 1 — Setup and baseline** (BRIEF §10). Scope for milestones 1–4: AgentDojo **Banking** suite only.
+**Current milestone: 2 — Topologies + tracing** (BRIEF §10; plan in `docs/PLAN_M2.md`). Scope for milestones 1–4: AgentDojo **Banking** suite only.
 
 ## How we work
 

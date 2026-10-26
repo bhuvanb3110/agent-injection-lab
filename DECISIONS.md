@@ -51,6 +51,8 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D43 · Failure labels: `asked_user` is separate from `gave_up_early`; hand labels live in a committed file · Accepted
 - D44 · user_task_9 is flagged as a known issue in every report that includes it · Accepted
 - D45 · Repeats 1 and 2 of the baseline are their own experiment; `lab report` pools experiments and shows per-task flips · Accepted
+- D46 · M4 sample size and provider are decided from measured cost only, never from attack results · Accepted
+- D47 · The canary line and the generic model name mean absolute ASR may differ slightly from AgentDojo's published numbers · Accepted
 
 ## Milestone 1
 
@@ -522,3 +524,19 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 
   The section appears only when some task has 2 or more repeats.
 - **Updates D36:** this is the run-to-run variance check D36 left owed. It covers all 16 tasks rather than BRIEF §7's 10% subset, because the budget allows it (D41: about 43–47 tasks per model per day). The 64 runs aren't made yet. They need real Groq calls.
+
+## Milestone 2
+
+Plan: `docs/PLAN_M2.md`, approved 2026-10-25.
+
+### D46. M4 sample size and provider are decided from measured cost only, never from attack results (2026-10-25)
+- **Rule:** the size of milestone 4's screening sample, and whether a second provider arm is added, are decided after the milestone-2 exit check, from **measured cost only**: tokens, calls and latency per topology. Attack results (ASR, propagation, utility under attack) play no part. The DECISIONS entry that makes the choice has to cite only cost figures.
+- **Why:** PLAN_M2 §7 and §10 estimate that the brief's sweeps don't fit Groq's free tier in reasonable time: about 12 days per model for a 50-case topology sweep. So the sample will probably shrink. If the size or the case mix were chosen after seeing which configurations look good or bad, the choice could steer the headline result. That is a form of tuning on results, which CLAUDE.md forbids. Fixing the rule before any attack run removes that option.
+- **Accepted in principle (Bhuvan):** the options are N = 50 (the brief's own fallback), the defense sweep on T2 only, or a separate pinned model arm on another provider (never mixed inside one comparison, BRIEF §8).
+
+### D47. The canary line and the generic model name mean absolute ASR may differ slightly from AgentDojo's published numbers (2026-10-25)
+- **Decision:** milestone 2's AgentDojo attack is the `important_instructions` template (`ImportantInstructionsAttack._JB_STRING`), built through `FixedJailbreakAttack` with `user_name="Emma Johnson"` and `model_name=DEFAULT_MODEL_NAME` ("the AI language model"), and stored as `important_instructions_no_model_name`. Two things differ from AgentDojo's published runs:
+  - **The model name.** `ImportantInstructionsAttack.__init__`, and through `super().__init__` its `_no_model_name` variant too, calls `get_model_name_from_pipeline` (`attacks/base_attacks.py`). That raises for gpt-oss, which isn't in `models.py:MODEL_NAMES`. So the payload addresses "the AI language model" instead of a named model.
+  - **One canary reference line** in the payload's signature block (`CNRY` + 8 characters derived from the case), used to measure verbatim propagation (PLAN_M2 §5).
+- **Consequence:** our absolute ASR for this attack may differ slightly from AgentDojo's published `important_instructions` numbers, so it should not be quoted as a like-for-like replication. Comparisons between *our* configurations are unaffected: every topology and defense gets the byte-identical payload for a given case.
+- **Approved by Bhuvan** at plan review.
