@@ -44,7 +44,7 @@ from lab.models.cache import request_key
 from lab.models.client import ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
-from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, message_event
+from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, TOOLS, USER, TraceEvent, message_event
 
 
 class MalformedToolCall(FunctionCall):
@@ -75,6 +75,8 @@ class LabLLM(BasePipelineElement):
         seed: int | None = None,
         agent_id: str = SINGLE_AGENT,
         agent_role: str = SINGLE_ROLE,
+        principal: str = USER,
+        tool_target: str = TOOLS,
     ) -> None:
         self.client = client
         self.provider = provider
@@ -86,7 +88,28 @@ class LabLLM(BasePipelineElement):
         # Who this model is in the run: names its transcript, its calls and its trace events.
         self.agent_id = agent_id
         self.agent_role = agent_role
+        # The edges of its trace events: whom it answers to, and where its tool calls go.
+        self.principal = principal
+        self.tool_target = tool_target
         self.name = f"{provider}/{model_id}"
+
+    def as_agent(
+        self, agent_id: str, agent_role: str, *, principal: str = USER, tool_target: str = TOOLS
+    ) -> LabLLM:
+        """The same model, client and sampling, playing another agent of the run (T2+)."""
+        return LabLLM(
+            self.client,
+            provider=self.provider,
+            model_id=self.model_id,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
+            seed=self.seed,
+            agent_id=agent_id,
+            agent_role=agent_role,
+            principal=principal,
+            tool_target=tool_target,
+        )
 
     def query(
         self,
@@ -143,11 +166,7 @@ class LabLLM(BasePipelineElement):
         )
         transcript = [*messages, assistant]
         ctx.transcripts[self.agent_id] = transcript
-        ctx.events.append(
-            message_event(
-                len(ctx.events), self.agent_id, self.agent_role, assistant, len(ctx.calls) - 1
-            )
-        )
+        ctx.events.append(self._event(len(ctx.events), assistant, len(ctx.calls) - 1))
         if response.finish_reason == "length":
             # Cut off by max_tokens: the answer or tool call may be incomplete, so the run ends
             # here as a model error rather than acting on half a message (D29). The call above
@@ -167,9 +186,13 @@ class LabLLM(BasePipelineElement):
             # The trace assumes transcripts only grow. A pipeline that rewrites one is a bug.
             raise ValueError(f"The transcript of agent {self.agent_id!r} was rewritten")
         for message in messages[len(seen) :]:
-            ctx.events.append(
-                message_event(len(ctx.events), self.agent_id, self.agent_role, message, None)
-            )
+            ctx.events.append(self._event(len(ctx.events), message, None))
+
+    def _event(self, seq: int, message: ChatMessage, call_idx: int | None) -> TraceEvent:
+        return message_event(
+            seq, self.agent_id, self.agent_role, message, call_idx,
+            principal=self.principal, tool_target=self.tool_target,
+        )
 
 
 class LabToolsExecutor(ToolsExecutor):
@@ -199,7 +222,7 @@ class LabToolsExecutor(ToolsExecutor):
         results: list[ChatMessage] = []
         for call in last["tool_calls"]:
             if isinstance(call, MalformedToolCall):
-                results.append(_malformed_call_result(call))
+                results.append(malformed_call_result(call))
                 continue
             single = ChatAssistantMessage(role="assistant", content=None, tool_calls=[call])
             query, runtime, env, out, extra_args = super().query(
@@ -209,7 +232,7 @@ class LabToolsExecutor(ToolsExecutor):
         return query, runtime, env, [*messages, *results], extra_args
 
 
-def _malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
+def malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
     return ChatToolResultMessage(
         role="tool",
         content=[text_content_block_from_string("")],
