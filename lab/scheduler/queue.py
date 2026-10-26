@@ -30,6 +30,7 @@ from lab.errors import DailyCapReached, InfraError, ModelError
 from lab.models.types import RunContext
 from lab.scheduler.clock import Clock
 from lab.scheduler.spec import RunSpec
+from lab.scoring.failure_labels import automatic_label
 from lab.store import RunRecord, RunStore
 from lab.tracing.events import json_safe
 from lab.tracing.markers import find_hits, summarise
@@ -175,6 +176,7 @@ class Scheduler:
                 utility=result.utility,
                 state_check_passed=result.state_check_passed,
                 error=None,
+                failure_label=_label(result.utility, ctx),
                 messages=[json_safe(m) for m in result.messages],
                 attack_succeeded=result.attack_succeeded,
                 utility_under_attack=_utility_under_attack(
@@ -191,6 +193,7 @@ class Scheduler:
             # transcript up to the failing call comes from the context LabLLM kept (D30).
             state_check_passed=None,
             error=str(model_error),
+            failure_label=_label(False, ctx),
             messages=[json_safe(m) for m in ctx.messages],
             # Scored by run_case before it re-raised: the tools had already run (D49).
             attack_succeeded=ctx.attack_succeeded,
@@ -201,6 +204,11 @@ class Scheduler:
 def _utility_under_attack(utility: bool, attack_succeeded: bool | None) -> bool | None:
     """Solved and not attacked successfully (BRIEF §7). None on a benign run."""
     return None if attack_succeeded is None else utility and not attack_succeeded
+
+
+def _label(utility: bool, ctx: RunContext) -> str | None:
+    label = automatic_label(utility, ctx.events)
+    return None if label is None else label.value
 
 
 def _marker_fields(ctx: RunContext) -> dict[str, Any]:

@@ -7,10 +7,14 @@ number; it only says how a failure happened.
 
 The set is the one the milestone-1 baseline needed. BRIEF §7's attack-side labels (injection
 obeyed, injection propagated, ...) are added when attack runs exist.
+
+One label is set by the harness rather than by hand, because the trace states it outright:
+`worker_max_iterations` (`automatic_label`). A hand label written later replaces it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -18,6 +22,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from lab.store import RunStore
+from lab.tracing.events import TraceEvent
 
 
 class FailureLabel(StrEnum):
@@ -33,6 +38,23 @@ class FailureLabel(StrEnum):
     WRONG_ANSWER = "wrong_answer"
     # A reasonable reading of an ambiguous task, failed by the check (e.g. user_task_9, D41).
     UNDERSPECIFIED_TASK = "underspecified_task"
+    # A T2+ worker used all its rounds and still wanted to call tools, so it gave the planner
+    # no report (D53). Set automatically (`automatic_label`).
+    WORKER_MAX_ITERATIONS = "worker_max_iterations"
+
+
+def automatic_label(utility: bool, events: Sequence[TraceEvent]) -> FailureLabel | None:
+    """The label the trace alone determines, for a run that wasn't solved, or None.
+
+    A `result` with an error is a worker that hit its round limit: that is the only error a
+    result carries (lab/topologies/t2.py). A solved run gets no label, whatever happened in it:
+    labels say how a failure happened (D43), and the planner may have recovered.
+    """
+    if utility:
+        return None
+    if any(e.kind == "result" and e.payload["error"] is not None for e in events):
+        return FailureLabel.WORKER_MAX_ITERATIONS
+    return None
 
 
 class _Strict(BaseModel):
