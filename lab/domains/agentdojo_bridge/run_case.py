@@ -16,6 +16,11 @@ the run, and `attack_succeeded` is the injection task's own check (AgentDojo cal
 `security`, but it returns True when the *attack* worked, so we don't reuse the name; see
 `TaskSuite.run_task_with_pipeline`). It is scored for every run that reaches the store, model
 errors included (D49).
+
+The function trace given to the `*_from_traces` checks is every tool call any agent sent to the
+tools, in the order they were made (PLAN_M2 §6). In T1 that is the agent's own calls, exactly
+what AgentDojo reads off the transcript. In T2 it is the workers' calls; the planner's delegate
+calls are not tool calls on the environment and are left out.
 """
 
 from collections.abc import Sequence
@@ -25,12 +30,13 @@ from typing import TypeVar
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.base_tasks import BaseInjectionTask, BaseUserTask
-from agentdojo.functions_runtime import FunctionsRuntime, TaskEnvironment
+from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite, functions_stack_trace_from_messages
 from agentdojo.types import ChatAssistantMessage, ChatMessage, get_text_content_as_str
 
 from lab.errors import ModelError
 from lab.models.types import CallRecord, RunContext
+from lab.tracing.events import TOOLS, TraceEvent
 
 Env = TypeVar("Env", bound=TaskEnvironment)
 
@@ -96,22 +102,30 @@ def run_case(
             # The pipeline raised before returning, but tools mutate `task_environment` in
             # place, so a transfer made before the error did happen. The output is empty and
             # the last assistant message, never executed, is not part of the trace.
+            trace = tool_call_trace(ctx.events, ran_to_completion=False)
             ctx.attack_succeeded = _check_attack(
-                injection_task, "", _executed(ctx.messages), pre_environment, task_environment
+                injection_task, "", trace, pre_environment, task_environment
             )
         raise
     messages = list(result_messages)
     final = _final_assistant_message(messages)
+    # A pipeline without LabLLM (AgentDojo's GroundTruthPipeline, in the parity test) keeps no
+    # trace events; its one transcript is then the trace, as in AgentDojo.
+    trace = (
+        tool_call_trace(ctx.events)
+        if ctx.events
+        else functions_stack_trace_from_messages(messages)
+    )
 
     state_check_passed = _check_utility(
-        user_task, final, messages, pre_environment, post_environment
+        user_task, final, trace, pre_environment, post_environment
     )
     outcome = _classify(final, state_check_passed)
     if injection_task is not None:
         ctx.attack_succeeded = _check_attack(
             injection_task,
             get_text_content_as_str(final["content"] or []),
-            messages,
+            trace,
             pre_environment,
             post_environment,
         )
@@ -138,16 +152,37 @@ def _final_assistant_message(messages: Sequence[ChatMessage]) -> ChatAssistantMe
     return last
 
 
+def tool_call_trace(
+    events: Sequence[TraceEvent], *, ran_to_completion: bool = True
+) -> list[FunctionCall]:
+    """Every tool call any agent sent to the tools, in the order the calls were made.
+
+    Like AgentDojo's `functions_stack_trace_from_messages`, it includes calls in a final message
+    that were never run (a run stopped at max_iterations). After a ModelError
+    (`ran_to_completion=False`), the run's last event, if it is a model's message, is left out:
+    the run broke off before its calls could run (D49).
+    """
+    ordered = sorted(events, key=lambda e: e.seq)
+    if not ran_to_completion and ordered and ordered[-1].payload.get("role") == "assistant":
+        ordered = ordered[:-1]
+    return [
+        FunctionCall.model_validate(call)
+        for event in ordered
+        if event.kind == "message" and event.payload["role"] == "assistant"
+        and event.to_agent == TOOLS
+        for call in event.payload["tool_calls"] or []
+    ]
+
+
 def _check_utility(
     user_task: BaseUserTask[Env],
     final: ChatAssistantMessage,
-    messages: Sequence[ChatMessage],
+    traces: list[FunctionCall],
     pre_environment: Env,
     post_environment: Env,
 ) -> bool:
     # Same order as TaskSuite._check_user_task_utility: the trace-based check wins if defined.
     output_text = get_text_content_as_str(final["content"] or [])
-    traces = functions_stack_trace_from_messages(messages)
     from_traces = user_task.utility_from_traces(
         output_text, pre_environment, post_environment, traces
     )
@@ -156,21 +191,15 @@ def _check_utility(
     return user_task.utility(output_text, pre_environment, post_environment)
 
 
-def _executed(messages: Sequence[ChatMessage]) -> Sequence[ChatMessage]:
-    # A transcript that ends on an assistant message ends on calls nobody ran.
-    return messages[:-1] if messages and messages[-1]["role"] == "assistant" else messages
-
-
 def _check_attack(
     injection_task: BaseInjectionTask[Env],
     output_text: str,
-    messages: Sequence[ChatMessage],
+    traces: list[FunctionCall],
     pre_environment: Env,
     post_environment: Env,
 ) -> bool:
     # Same order as TaskSuite._check_injection_task_security: the trace-based check wins if
     # defined. True means the attack worked.
-    traces = functions_stack_trace_from_messages(messages)
     from_traces = injection_task.security_from_traces(
         output_text, pre_environment, post_environment, traces
     )
