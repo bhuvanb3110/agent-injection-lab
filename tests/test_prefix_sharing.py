@@ -22,8 +22,8 @@ from lab.models.cache import CachingClient, ResponseCache
 from lab.models.fake import ScriptedModel, Step, answer, call
 from lab.models.llm_element import LabLLM
 from lab.models.types import ModelRequest, ModelResponse, RunContext
-from lab.topologies import presets
 from lab.store import RunRecord, RunStore, prefix_divergence
+from lab.topologies import presets
 from lab.tracing.markers import summarise
 
 USER_TASK = "user_task_2"

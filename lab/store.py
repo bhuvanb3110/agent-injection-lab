@@ -490,6 +490,14 @@ class RunStore:
         )
         return [r[0] for r in rows]
 
+    def run_ids_with_prefix(self, prefix: str) -> list[str]:
+        """Stored run IDs that start with `prefix` (lab trace takes a short ID)."""
+        rows = self._db.execute(
+            "SELECT run_id FROM runs WHERE substr(run_id, 1, ?) = ? ORDER BY run_id",
+            (len(prefix), prefix),
+        )
+        return [r[0] for r in rows]
+
     def runs(self, experiment: str) -> list[RunRecord]:
         return [self.get_run(run_id) for run_id in self.run_ids(experiment)]
 

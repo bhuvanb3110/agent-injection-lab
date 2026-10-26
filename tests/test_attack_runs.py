@@ -269,6 +269,10 @@ def test_cli_run_stores_attack_scores_and_report_keeps_them_out_of_benign_utilit
     assert main(["report", "attack_smoke", "--store", str(store), "--config", str(config)]) == 0
     report = capsys.readouterr().out
     assert "Runs stored: 6 of 6" in report
-    assert "4 attack run(s) are stored but not shown" in report
+    # The attack runs are reported in their own section (D69), apart from benign utility.
+    attacks = report.split("Attacks and oversight")[1]
+    assert "fake/ground-truth  topology t1  attack runs: n = 2" in attacks
+    assert "ASR                    0/2 = 0.0%" in attacks
+    assert "ASR                    2/2 = 100.0%" in attacks
     # Benign utility counts the two benign runs only, one per model.
     assert report.count("all tasks             1/1 = 100.0%") == 2
