@@ -28,6 +28,7 @@ from lab.domains.agentdojo_bridge import (
 from lab.models.fake import FAKE_PROVIDER, fake_model_info
 from lab.models.providers import ModelInfo, ProviderConfig
 from lab.scheduler.spec import RunSpec
+from lab.topologies.presets import TopologyName
 
 
 class _Strict(BaseModel):
@@ -63,9 +64,10 @@ class ExperimentConfig(_Strict):
     name: str
     description: str = ""
     suite: Literal["banking"]  # milestones 1-4 are Banking only
-    # Give either `topology` or `topologies`. T2-T5 are added to the Literal as they are built.
-    topology: Literal["t1", "t2"] | None = None
-    topologies: list[Literal["t1", "t2"]] | None = None
+    # Give either `topology` or `topologies`: names from the presets table (PLAN_M2 Q3), which
+    # grows as topologies are built.
+    topology: TopologyName | None = None
+    topologies: list[TopologyName] | None = None
     user_tasks: list[str] | Literal["all"]
     models: list[ModelRef] = Field(min_length=1)
     # A count n means repeat indices 0..n-1. A list names the indices, so a later experiment can

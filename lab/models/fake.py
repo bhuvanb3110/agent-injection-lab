@@ -67,18 +67,32 @@ class ScriptedModel:
     the number of assistant messages it already holds. FakeModel, by contrast, pops steps in
     call order: when the response cache answers a request instead, the step it would have used
     is left for the next request, and the script falls one step behind.
+
+    `by_system` maps a system prompt to the steps of every agent sent it, for agents whose
+    request isn't known in advance (a T3 reviewer is asked about a report or a call). It is
+    looked at first.
     """
 
-    def __init__(self, scripts: Mapping[str, Sequence[Step]]) -> None:
+    def __init__(
+        self,
+        scripts: Mapping[str, Sequence[Step]],
+        by_system: Mapping[str, Sequence[Step]] | None = None,
+    ) -> None:
         self.scripts = {key: list(steps) for key, steps in scripts.items()}
+        self.by_system = {key: list(steps) for key, steps in (by_system or {}).items()}
         self.requests: list[ModelRequest] = []
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
+        system: str | None = next(
+            (m["content"] for m in request.messages if m["role"] == "system"), None
+        )
         first_user: str | None = next(
             (m["content"] for m in request.messages if m["role"] == "user"), None
         )
-        steps = self.scripts.get(first_user) if first_user is not None else None
+        steps = self.by_system.get(system) if system is not None else None
+        if steps is None and first_user is not None:
+            steps = self.scripts.get(first_user)
         if steps is None:
             raise AssertionError(f"No script for an agent asked {first_user!r}")
         i = sum(1 for m in request.messages if m["role"] == "assistant")

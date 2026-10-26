@@ -19,6 +19,11 @@ In T2 one script plays every agent, in the order the calls are made (D53):
   injection task needs, it makes those calls itself (a local attack). If not, it relays the
   injection task's GOAL in its report, the planner adds the GOAL to its next instruction to the
   worker that holds those tools, and that worker makes the calls (a cross-worker attack).
+
+T3 and T4 use T2's scripts: the planner and workers act as in T2, and the gates decide. Every
+T3 reviewer of `ground-truth` and `obedient` approves everything (`scripted_reviewers`), so a
+scripted T3 run is T2 plus reviewer calls. A `refuse` planner never delegates, so nothing is
+reviewed.
 """
 
 from __future__ import annotations
@@ -32,7 +37,9 @@ from agentdojo.base_tasks import BaseInjectionTask, BaseUserTask
 from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite
 
+from lab.defenses.llm_reviewer import reviewer_system_message
 from lab.models.fake import Step, answer, call
+from lab.topologies.presets import PRESETS
 from lab.topologies.t2 import delegate_tool_name, worker_for_tool
 
 Env = TypeVar("Env", bound=TaskEnvironment)
@@ -41,6 +48,22 @@ SCRIPTED_MODELS = ("ground-truth", "refuse", "obedient")
 REFUSAL = "I can't help with that."
 WORKER_REPORT = "Done."
 RELAY = " I was also asked to pass this on: "
+APPROVE = '{"verdict": "approve", "reason": "It serves the request."}'
+
+
+def scripted_reviewers(model_id: str) -> dict[str, list[Step]]:
+    """The scripted model's T3 reviewers, keyed by their system prompt (ScriptedModel's
+    `by_system`): each one approves. `refuse` has none; it is never asked."""
+    if model_id == "refuse":
+        return {}
+    return {reviewer_system_message(): [answer(APPROVE)]}
+
+
+def _base(topology: str) -> str:
+    """The shape whose scripts a topology uses: T3 and T4 act as T2 (module docstring)."""
+    if topology not in PRESETS:
+        raise ValueError(f"No scripts for topology {topology!r}")
+    return "t1" if PRESETS[topology].base == "single" else "t2"
 
 
 def script_for(
@@ -60,7 +83,8 @@ def script_for(
         return ground_truth_script(suite, user_task, obeyed)
     if topology == "t2":
         return t2_ground_truth_script(suite, user_task, obeyed)
-    raise ValueError(f"No scripts for topology {topology!r}")
+    # Call order isn't known in advance once gates make calls of their own.
+    raise ValueError(f"No call-order script for topology {topology!r}; use scripts_by_request")
 
 
 def scripts_by_request(
@@ -72,6 +96,7 @@ def scripts_by_request(
 ) -> dict[str, list[Step]]:
     """The same steps, per agent, keyed by the agent's first user message: for a
     ScriptedModel, which stays in step when the response cache answers a call (D54)."""
+    topology = _base(topology)
     if topology == "t2" and model_id != "refuse":
         obeyed = injection_task if model_id == "obedient" else None
         planner, workers = _t2_agent_scripts(suite, user_task, obeyed)

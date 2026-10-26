@@ -11,16 +11,14 @@ with one RateLimiter per model, seeded from the last 24 h of the run store's `re
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-
-from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 
 from lab import provenance
 from lab.attacks.agentdojo import build_injections, markers_for
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
-from lab.domains.agentdojo_bridge.scripted import scripts_by_request
+from lab.domains.agentdojo_bridge.scripted import scripted_reviewers, scripts_by_request
 from lab.models.cache import CachingClient, ResponseCache
 from lab.models.client import ChatClient, OpenAICompatClient
 from lab.models.fake import FAKE_PROVIDER, ScriptedModel
@@ -33,11 +31,7 @@ from lab.scheduler.queue import ProgressFn, Provenance, Scheduler, SchedulerRepo
 from lab.scheduler.retry import ScheduledClient
 from lab.scheduler.spec import RunSpec
 from lab.store import RunStore
-from lab.topologies.t1 import build_t1
-from lab.topologies.t2 import build_t2
-
-# Topology name -> pipeline builder. The presets table of slice 4 replaces this (PLAN_M2 Q3).
-TOPOLOGIES: dict[str, Callable[[LabLLM], BasePipelineElement]] = {"t1": build_t1, "t2": build_t2}
+from lab.topologies import presets
 
 
 def model_key(provider: str, model_id: str) -> str:
@@ -123,9 +117,11 @@ class ExperimentRunner:
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
             # Keyed by request, not popped in call order, so cache hits can't skew it (D54).
-            inner = ScriptedModel(scripts_by_request(
-                spec.model_id, self.suite, task, injection_task, spec.topology
-            ))
+            # Reviewers (T3) are recognised by their system prompt.
+            inner = ScriptedModel(
+                scripts_by_request(spec.model_id, self.suite, task, injection_task, spec.topology),
+                by_system=scripted_reviewers(spec.model_id),
+            )
         else:
             inner = self.clients[spec.provider]
         client = CachingClient(
@@ -148,7 +144,7 @@ class ExperimentRunner:
         )
         return run_case(
             self.suite,
-            TOPOLOGIES[spec.topology](llm),
+            presets.build(spec.topology, llm),
             task,
             ctx,
             injections=injections,
