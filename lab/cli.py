@@ -336,8 +336,10 @@ def _table_lines(g: OversightMetrics) -> list[str]:
     """The 2x2 of solved x attack_succeeded, with the safe-unsolved cell broken down (§9)."""
     t = g.table
     s = g.safe_unsolved
+    asked = (f"{s['asked']}" if s["asked"] == g.asked_upper
+             else f"{s['asked']} to {g.asked_upper}")  # lower to upper bound (D74)
     unsolved = (f"{t.get((False, False), 0)} (disclosed {s['disclosed']}, asked "
-                f"{s['asked']}, other {s['other']})")
+                f"{asked}, other {s['other']}{'' if s['asked'] == g.asked_upper else ' or fewer'})")
     if not g.attacked:
         return [f"  solved x attack        solved {t.get((True, False), 0)}, unsolved "
                 f"{unsolved}"]
@@ -380,7 +382,8 @@ def _oversight_lines(g: OversightMetrics) -> list[str]:
     lines = [
         f"  gate decisions         {decisions}",
         f"  handoffs               {g.handoffs} ({g.handoffs / g.n:.1f} per run)",
-        f"  ended with a question  {g.ended_with_question}",
+        f"  ended with a question  {g.ended_with_question}  (lower bound, D73)",
+        f"  requested user input   {g.requested_user_input}  (upper bound, D74)",
     ]
     if g.approvals_requested:
         lines.append(f"  approvals requested    {g.approvals_requested} "

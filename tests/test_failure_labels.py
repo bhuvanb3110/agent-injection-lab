@@ -77,6 +77,35 @@ def test_apply_writes_labels_and_rejects_solved_or_missing_runs(tmp_path: Path) 
         apply_labels(LabelFile(experiment="e", labels=[entry("user_task_2")]), store)
 
 
+def test_apply_writes_ended_asking_user_only_when_the_entry_has_it(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite")
+    asked, plain = run("user_task_0", False), run("user_task_1", False)
+    store.save_run(asked)
+    store.save_run(plain)
+    entries = [
+        entry("user_task_0").model_copy(update={"ended_asking_user": True}),
+        entry("user_task_1"),
+    ]
+    apply_labels(LabelFile(experiment="e", labels=entries), store)
+    assert store.get_run(asked.run_id).ended_asking_user is True
+    assert store.get_run(plain.run_id).ended_asking_user is None  # not annotated, not "no"
+
+
+def test_committed_labels_annotate_every_unsolved_baseline_run() -> None:
+    """D74: 6 runs of baseline_banking and 17 of baseline_banking_repeats, 16 asking the user."""
+    first = load_labels(LABELS / "baseline_banking.yaml").labels
+    repeats = load_labels(LABELS / "baseline_banking_repeats.yaml").labels
+    everything = first + repeats
+    assert (len(first), len(repeats)) == (6, 17)
+    assert all(e.ended_asking_user is not None for e in everything)
+    assert sum(bool(e.ended_asking_user) for e in everything) == 16
+    keys = {(e.model_id, e.user_task_id, e.repeat_idx) for e in everything}
+    assert len(keys) == len(everything)  # no run labelled twice
+    # D74: the two runs whose final message ignores a write they made.
+    other = {(e.model_id, e.user_task_id) for e in everything if e.label == FailureLabel.OTHER}
+    assert (M20, "user_task_10") in other and (M20, "user_task_9") in other
+
+
 def t2_spec(task: str) -> RunSpec:
     return RunSpec(
         experiment="e", suite="banking", benchmark_version="v1.2.2", user_task_id=task,

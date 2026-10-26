@@ -41,6 +41,8 @@ class FailureLabel(StrEnum):
     # A T2+ worker used all its rounds and still wanted to call tools, so it gave the planner
     # no report (D53). Set automatically (`automatic_label`).
     WORKER_MAX_ITERATIONS = "worker_max_iterations"
+    # A failure that fits none of the above (D74).
+    OTHER = "other"
 
 
 def automatic_label(utility: bool, events: Sequence[TraceEvent]) -> FailureLabel | None:
@@ -67,6 +69,9 @@ class LabelEntry(_Strict):
     user_task_id: str
     repeat_idx: int
     label: FailureLabel
+    # Hand annotation of the behaviour: did the final message ask the user for something or to
+    # choose? Kept apart from `label`, which is the cause (D74). None: not annotated.
+    ended_asking_user: bool | None = None
     note: str = ""
 
 
@@ -97,4 +102,6 @@ def apply_labels(labels: LabelFile, store: RunStore) -> int:
         if run.utility:
             raise ValueError(f"Run {key} of {labels.experiment} was solved; it has no failure")
         store.set_failure_label(run.run_id, entry.label.value)
+        if entry.ended_asking_user is not None:
+            store.set_ended_asking_user(run.run_id, entry.ended_asking_user)
     return len(labels.labels)

@@ -49,6 +49,9 @@ class RunRecord(BaseModel):
     state_check_passed: bool | None  # None when the run never finished (model_error)
     error: str | None
     failure_label: str | None = None  # hand label from configs/labels/ (D43); None: unlabeled
+    # Hand annotation from configs/labels/ (D74): did the final message ask the user for
+    # something or to choose? A behaviour, where `failure_label` is a cause. None: not annotated.
+    ended_asking_user: bool | None = None
     # Attack runs only (D49); None on benign runs and on every milestone-1 run: not applicable.
     attack_succeeded: bool | None = None  # the injection task's check on the final state
     utility_under_attack: bool | None = None  # solved and not attack_succeeded
@@ -240,6 +243,7 @@ _ADDED_COLUMNS = [
     ("runs", "gate_leak", "INTEGER"),  # D67
     ("marker_hits", "gate_leak", "INTEGER"),  # D67
     ("runs", "gate_leak_acted_on", "INTEGER"),  # D72
+    ("runs", "ended_asking_user", "INTEGER"),  # D74
 ]
 
 
@@ -377,8 +381,8 @@ class RunStore:
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
-            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on"
-            " FROM runs WHERE run_id = ?",
+            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on,"
+            " ended_asking_user FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -416,6 +420,7 @@ class RunStore:
             reviewer_exposed=_bool(row[22]),
             gate_leak=_bool(row[23]),
             gate_leak_acted_on=_bool(row[24]),
+            ended_asking_user=_bool(row[25]),
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),
@@ -478,11 +483,21 @@ class RunStore:
         return None if found is None else PrefixDivergence(*found)
 
     def set_failure_label(self, run_id: str, label: str | None) -> None:
-        """The one update the store allows: a failure label is an annotation added after the
+        """An update the store allows: a failure label is an annotation added after the
         run was scored (D43). It never touches the outcome, utility or anything measured."""
         with self._db:
             cursor = self._db.execute(
                 "UPDATE runs SET failure_label = ? WHERE run_id = ?", (label, run_id)
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(run_id)
+
+    def set_ended_asking_user(self, run_id: str, value: bool | None) -> None:
+        """The second annotation the store allows, like `set_failure_label` (D74)."""
+        with self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET ended_asking_user = ? WHERE run_id = ?",
+                (None if value is None else int(value), run_id),
             )
         if cursor.rowcount != 1:
             raise KeyError(run_id)
