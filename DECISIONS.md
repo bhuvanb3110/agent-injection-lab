@@ -2,6 +2,56 @@
 
 One entry per design decision: what was decided, why, and what was rejected. Newest at the bottom.
 
+## Index
+
+Status is from the entry's own updates. `Accepted` means no later entry changes it.
+
+- D1 · Thin OpenAI-compatible client instead of LiteLLM · Accepted
+- D2 · SQLite for the cache and the run store, in separate files · Accepted
+- D3 · Pin AgentDojo benchmark v1.2.2 and agentdojo==0.1.35 · Accepted
+- D4 · A topology is any AgentDojo `BasePipelineElement`; T1 is AgentDojo's default shape · Accepted
+- D5 · Two kinds of error: infrastructure errors are re-queued, model errors count as not solved · Accepted
+- D6 · Malformed tool-call JSON goes back to the model as a recoverable tool error · Accepted
+- D7 · Each case runs exactly once · Accepted
+- D8 · CI smoke uses the FakeModel; the Ollama smoke run is local only · Accepted
+- D9 · `run_case` keeps the raw state check alongside the outcome · Accepted
+- D10 · Tests block network sockets · Accepted
+- D11 · Three typed errors: InfraError, ModelError, ConfigError · Accepted
+- D12 · The cache key is a hash of exactly what is sent · Accepted
+- D13 · Cache semantics · Accepted
+- D14 · Message conversion rules · Accepted
+- D15 · Malformed tool calls: `MalformedToolCall` + `LabToolsExecutor` · Accepted
+- D16 · Groq Llama models are gone; the Groq model choice needs re-approval · Resolved by D18
+- D17 · Per-run telemetry travels in `extra_args["ctx"]` · Accepted
+- D18 · Approved model pair: gpt-oss-120b (large) and gpt-oss-20b (small) on Groq · Accepted
+- D19 · Sampling: temperature 0.6 and reasoning_effort "medium", fixed per model and recorded per run · Accepted
+- D20 · Free-tier limits come from the account's limits page; tokens/day is the binding limit · Accepted
+- D21 · A ModelError is stored as outcome "model_error" with a subtype, and counts as not solved · Accepted
+- D22 · Rate limiting: four sliding windows per model, plus the provider's headers · Accepted
+- D23 · One retry policy, for InfraError only, applied per call · Accepted
+- D24 · Run ID = sha256 of the RunSpec; provenance is recorded but not hashed · Superseded by D27
+- D25 · Run store: runs, calls and requests in one SQLite file, insert-only · Amended by D30
+- D26 · The scheduler queue: sequential, per-model stop, bounded re-queue · Accepted
+- D27 · Seed: base seed in the experiment config, per-run seed = base + repeat index, sent to the provider · Accepted
+- D28 · Groq charges tokens/minute as prompt + min(max_tokens, its own output estimate); max_tokens is 2048 · Accepted
+- D29 · A response cut off by the token limit is a model error, subtype "truncated" · Accepted
+- D30 · Runs that end in model_error keep their partial transcript · Accepted
+- D31 · A test keeps `.env.example` free of real values · Accepted
+- D32 · Experiment configs: what they hold, and how they expand into runs · Accepted
+- D33 · The smoke run uses two scripted models built from AgentDojo's own tasks · Amended by D39
+- D34 · Metrics: Wilson CI, model-error breakdown, and latency without cache hits · Accepted
+- D35 · CLI: `lab run` and `lab report` · Accepted
+- D36 · The baseline runs 1 repeat per task, not 3 · Amended by D45
+- D37 · Finding: a do-nothing agent scores 5/16 on Banking v1.2.2 · Accepted
+- D38 · T1 lives in `lab/topologies/t1.py` · Accepted
+- D39 · Milestone 1 gate restated on the 11 discriminating tasks; the report shows utility three ways · Accepted
+- D40 · A missing reasoning count is Groq's omission, not our parsing; raw usage is now kept and the report shows a range · Accepted
+- D41 · Baseline results and findings: gate passed, failures read, token estimate revised · Amended by D43, D44
+- D42 · Failed requests store their error, redacted; the limiter's estimate uses 5.0 characters per token · Accepted
+- D43 · Failure labels: `asked_user` is separate from `gave_up_early`; hand labels live in a committed file · Accepted
+- D44 · user_task_9 is flagged as a known issue in every report that includes it · Accepted
+- D45 · Repeats 1 and 2 of the baseline are their own experiment; `lab report` pools experiments and shows per-task flips · Accepted
+
 ## Milestone 1
 
 ### D1. Thin OpenAI-compatible client instead of LiteLLM (2026-10-25)

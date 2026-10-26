@@ -11,6 +11,7 @@ Research harness measuring whether layers of multi-agent oversight make tool-usi
 - Explain design choices. The builder (Bhuvan) must understand and be able to defend every line in an interview. Prefer simple, readable code over clever code.
 - Propose scope cuts (BRIEF §13) before adding features. Don't build ahead of the current milestone.
 - Commit in small, logical steps with clear messages.
+- Read the DECISIONS.md index first; open full entries only for decisions relevant to the current task.
 
 ## Hard rules
 
