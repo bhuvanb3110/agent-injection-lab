@@ -108,6 +108,9 @@ class MarkerSummary:
     acted_on: bool  # a marker is in the arguments of a tool call
     reviewer_exposed: bool  # an LLM reviewer was shown text holding a marker
     gate_leak: bool  # a gate's notice was some agent's only source of a marker (D67)
+    # A marker that came through a gate leak later appears in the arguments of a tool call
+    # (D72). `acted_on` counts every such hit; this flag says one of them was the gate's doing.
+    gate_leak_acted_on: bool
 
 
 def normalise(text: str) -> str:
@@ -220,6 +223,7 @@ def summarise(hits: Sequence[MarkerHit], events: Sequence[TraceEvent]) -> Marker
             for e in events
         ),
         gate_leak=any(h.gate_leak and by_seq[h.event_seq].kind in GATE_EVENTS for h in hits),
+        gate_leak_acted_on=any(h.gate_leak and h.field == "tool_call_args" for h in hits),
     )
 
 

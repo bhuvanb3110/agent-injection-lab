@@ -363,6 +363,8 @@ def _marker_lines(g: OversightMetrics) -> list[str]:
         f"  acted on               {_fmt_proportion(g.acted_on)}",
         f"  gate leak              {_fmt_proportion(g.gate_leak)}  (a gate's notice was an "
         "agent's only source, D67)",
+        f"  gate leak acted on     {_fmt_proportion(g.gate_leak_acted_on)}  (a leaked marker "
+        "later in a tool call's args, D72)",
         f"  reviewer exposed       {_fmt_proportion(g.reviewer_exposed)}",
     ]
     if g.by_role:

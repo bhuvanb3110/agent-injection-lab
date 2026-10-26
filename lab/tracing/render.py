@@ -39,7 +39,8 @@ def trace_text(record: RunRecord, divergence: PrefixDivergence | None = None) ->
         f"utility under attack {_yn(record.utility_under_attack)}",
         f"  markers    propagated {_yn(record.propagated)}, depth "
         f"{_none(record.infection_depth)}, acted on {_yn(record.acted_on)}, in final output "
-        f"{_yn(record.marker_in_final_output)}, gate leak {_yn(record.gate_leak)}, reviewer "
+        f"{_yn(record.marker_in_final_output)}, gate leak {_yn(record.gate_leak)} "
+        f"(acted on {_yn(record.gate_leak_acted_on)}), reviewer "
         f"exposed {_yn(record.reviewer_exposed)}",
         "",
         "Events (>> marks a marker hit)",

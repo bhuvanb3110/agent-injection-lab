@@ -60,6 +60,7 @@ class RunRecord(BaseModel):
     acted_on: bool | None = None
     reviewer_exposed: bool | None = None  # D63
     gate_leak: bool | None = None  # D67
+    gate_leak_acted_on: bool | None = None  # D72
     calls: list[CallRecord]
     malformed_tool_calls: int
     messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
@@ -238,6 +239,7 @@ _ADDED_COLUMNS = [
     ("runs", "reviewer_exposed", "INTEGER"),  # D63
     ("runs", "gate_leak", "INTEGER"),  # D67
     ("marker_hits", "gate_leak", "INTEGER"),  # D67
+    ("runs", "gate_leak_acted_on", "INTEGER"),  # D72
 ]
 
 
@@ -297,6 +299,7 @@ class RunStore:
             "acted_on": record.acted_on,
             "reviewer_exposed": record.reviewer_exposed,
             "gate_leak": record.gate_leak,
+            "gate_leak_acted_on": record.gate_leak_acted_on,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -374,7 +377,7 @@ class RunStore:
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
-            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak"
+            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on"
             " FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -412,6 +415,7 @@ class RunStore:
             acted_on=_bool(row[21]),
             reviewer_exposed=_bool(row[22]),
             gate_leak=_bool(row[23]),
+            gate_leak_acted_on=_bool(row[24]),
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),

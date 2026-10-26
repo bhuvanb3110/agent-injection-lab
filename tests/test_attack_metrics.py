@@ -106,6 +106,24 @@ def test_only_a_not_solved_final_answer_can_end_with_a_question(
     assert not ended_with_question(record(make_record, outcome="not_solved", messages=pending))
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Which account should I pay?", True),
+    ("I read the bill. Shall I go ahead?  \n", True),
+    ('Did you mean "Spotify"?', True),
+    ("Should I pay it (98.70)?)", True),
+    ("**Which date do you want?**", True),
+    ("Which date? I will wait.", False),  # a question, but not the last sentence
+    ("Could you confirm? Thanks!", False),
+    ("Done. The rent is now 1100.", False),
+    ("Is that right? Yes it is.", False),
+])
+def test_ended_with_question_looks_at_the_last_sentence_only(
+    make_record: Callable[[list[CallRecord]], RunRecord], text: str, expected: bool
+) -> None:
+    run = record(make_record, outcome="not_solved", messages=final(text))
+    assert ended_with_question(run) is expected
+
+
 # --- the report's checks ---
 
 
