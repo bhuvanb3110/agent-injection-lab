@@ -3,12 +3,15 @@
 It never touches the network. Each `complete()` pops the next scripted step; a step can be a
 response or an exception (to script a 429, for example). Running out of script is an error,
 so a test can't pass by accident after the model "stops talking".
+
+`ScriptedModel` plays the same steps keyed by the request instead, for runs that go through the
+response cache (the runner's scripted models).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Any
 
@@ -53,6 +56,38 @@ class FakeModel:
     @property
     def remaining(self) -> int:
         return len(self._script)
+
+
+class ScriptedModel:
+    """A ChatClient whose response depends only on the request, so a cache hit can't put it out
+    of step (D54).
+
+    `scripts` maps each agent's first user message (the user's request, or a worker's
+    instruction) to that agent's steps. A request gets step i of its agent's script, where i is
+    the number of assistant messages it already holds. FakeModel, by contrast, pops steps in
+    call order: when the response cache answers a request instead, the step it would have used
+    is left for the next request, and the script falls one step behind.
+    """
+
+    def __init__(self, scripts: Mapping[str, Sequence[Step]]) -> None:
+        self.scripts = {key: list(steps) for key, steps in scripts.items()}
+        self.requests: list[ModelRequest] = []
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        first_user: str | None = next(
+            (m["content"] for m in request.messages if m["role"] == "user"), None
+        )
+        steps = self.scripts.get(first_user) if first_user is not None else None
+        if steps is None:
+            raise AssertionError(f"No script for an agent asked {first_user!r}")
+        i = sum(1 for m in request.messages if m["role"] == "assistant")
+        if i >= len(steps):
+            raise AssertionError(f"Script exhausted after {len(steps)} steps for {first_user!r}")
+        step = steps[i]
+        if isinstance(step, Exception):
+            raise step
+        return step
 
 
 def answer(text: str | None) -> ModelResponse:

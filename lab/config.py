@@ -64,8 +64,8 @@ class ExperimentConfig(_Strict):
     description: str = ""
     suite: Literal["banking"]  # milestones 1-4 are Banking only
     # Give either `topology` or `topologies`. T2-T5 are added to the Literal as they are built.
-    topology: Literal["t1"] | None = None
-    topologies: list[Literal["t1"]] | None = None
+    topology: Literal["t1", "t2"] | None = None
+    topologies: list[Literal["t1", "t2"]] | None = None
     user_tasks: list[str] | Literal["all"]
     models: list[ModelRef] = Field(min_length=1)
     # A count n means repeat indices 0..n-1. A list names the indices, so a later experiment can

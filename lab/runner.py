@@ -2,7 +2,8 @@
 
 Per model, one invocation builds
 
-    LabLLM -> CachingClient -> ScheduledClient -> provider client (OpenAICompatClient or FakeModel)
+    LabLLM -> CachingClient -> ScheduledClient -> provider client (OpenAICompatClient or
+                                                  ScriptedModel)
 
 with one RateLimiter per model, seeded from the last 24 h of the run store's `requests` table
 (D22), so a restart the same day remembers what was already spent.
@@ -10,17 +11,19 @@ with one RateLimiter per model, seeded from the last 24 h of the run store's `re
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+
+from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 
 from lab import provenance
 from lab.attacks.agentdojo import build_injections, markers_for
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
-from lab.domains.agentdojo_bridge.scripted import script_for
+from lab.domains.agentdojo_bridge.scripted import scripts_by_request
 from lab.models.cache import CachingClient, ResponseCache
 from lab.models.client import ChatClient, OpenAICompatClient
-from lab.models.fake import FAKE_PROVIDER, FakeModel
+from lab.models.fake import FAKE_PROVIDER, ScriptedModel
 from lab.models.llm_element import LabLLM
 from lab.models.providers import ProviderConfig
 from lab.models.types import RunContext
@@ -31,6 +34,10 @@ from lab.scheduler.retry import ScheduledClient
 from lab.scheduler.spec import RunSpec
 from lab.store import RunStore
 from lab.topologies.t1 import build_t1
+from lab.topologies.t2 import build_t2
+
+# Topology name -> pipeline builder. The presets table of slice 4 replaces this (PLAN_M2 Q3).
+TOPOLOGIES: dict[str, Callable[[LabLLM], BasePipelineElement]] = {"t1": build_t1, "t2": build_t2}
 
 
 def model_key(provider: str, model_id: str) -> str:
@@ -115,7 +122,10 @@ class ExperimentRunner:
         )
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
-            inner = FakeModel(script_for(spec.model_id, self.suite, task, injection_task))
+            # Keyed by request, not popped in call order, so cache hits can't skew it (D54).
+            inner = ScriptedModel(scripts_by_request(
+                spec.model_id, self.suite, task, injection_task, spec.topology
+            ))
         else:
             inner = self.clients[spec.provider]
         client = CachingClient(
@@ -138,7 +148,7 @@ class ExperimentRunner:
         )
         return run_case(
             self.suite,
-            build_t1(llm),
+            TOPOLOGIES[spec.topology](llm),
             task,
             ctx,
             injections=injections,
