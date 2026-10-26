@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from lab import provenance
+from lab.attacks.agentdojo import build_injections
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
 from lab.domains.agentdojo_bridge.scripted import script_for
@@ -104,9 +105,14 @@ class ExperimentRunner:
     def run_one(self, spec: RunSpec, ctx: RunContext) -> CaseResult:
         """Build the pipeline for one spec and run it once. The Scheduler's `run_fn`."""
         task = self.suite.get_user_task_by_id(spec.user_task_id)
+        injection_task = None
+        injections = None
+        if spec.attack is not None and spec.injection_task_id is not None:
+            injection_task = self.suite.get_injection_task_by_id(spec.injection_task_id)
+            injections = build_injections(self.suite, spec.attack, task, injection_task)
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
-            inner = FakeModel(script_for(spec.model_id, self.suite, task))
+            inner = FakeModel(script_for(spec.model_id, self.suite, task, injection_task))
         else:
             inner = self.clients[spec.provider]
         client = CachingClient(
@@ -127,7 +133,14 @@ class ExperimentRunner:
             reasoning_effort=spec.reasoning_effort,
             seed=spec.seed,
         )
-        return run_case(self.suite, build_t1(llm), task, ctx)
+        return run_case(
+            self.suite,
+            build_t1(llm),
+            task,
+            ctx,
+            injections=injections,
+            injection_task=injection_task,
+        )
 
     def run(self, progress: ProgressFn | None = None) -> SchedulerReport:
         scheduler = Scheduler(self.store, self.run_one, self.clock, self.provenance())

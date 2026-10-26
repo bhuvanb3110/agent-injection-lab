@@ -154,11 +154,17 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
         records = [r for experiment in experiments for r in store.runs(experiment)]
         counts = [_expected_runs(experiment, config_path) for experiment in experiments]
         expected = None if None in counts else sum(c for c in counts if c is not None)
+        # Benign utility is computed on benign runs only. An attacked run's utility means
+        # something else (solved under attack), and pooling the two would move the baseline.
+        benign = [r for r in records if r.spec.attack is None]
         print(report_text(
-            ", ".join(experiments), compute_metrics(records), len(records), expected,
-            flips=compute_flips(records),
-            tasks={r.spec.user_task_id for r in records},
+            ", ".join(experiments), compute_metrics(benign), len(records), expected,
+            flips=compute_flips(benign),
+            tasks={r.spec.user_task_id for r in benign},
         ))
+        if len(benign) < len(records):
+            print(f"\n{len(records) - len(benign)} attack run(s) are stored but not shown: "
+                  "the attack report is not built yet (milestone 2, slice 5).")
         return 0
     finally:
         store.close()

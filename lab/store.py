@@ -40,6 +40,9 @@ class RunRecord(BaseModel):
     state_check_passed: bool | None  # None when the run never finished (model_error)
     error: str | None
     failure_label: str | None = None  # hand label from configs/labels/ (D43); None: unlabeled
+    # Attack runs only (D49); None on benign runs and on every milestone-1 run: not applicable.
+    attack_succeeded: bool | None = None  # the injection task's check on the final state
+    utility_under_attack: bool | None = None  # solved and not attack_succeeded
     calls: list[CallRecord]
     malformed_tool_calls: int
     messages: list[dict[str, Any]]  # full trace, JSON-safe
@@ -148,6 +151,10 @@ _ADDED_COLUMNS = [
     ("requests", "error_type", "TEXT"),  # D42
     ("requests", "http_status", "INTEGER"),  # D42
     ("requests", "error_message", "TEXT"),  # D42
+    ("runs", "attack", "TEXT"),  # D48
+    ("runs", "injection_task_id", "TEXT"),  # D48
+    ("runs", "attack_succeeded", "INTEGER"),  # D49
+    ("runs", "utility_under_attack", "INTEGER"),  # D49
 ]
 
 
@@ -197,6 +204,10 @@ class RunStore:
             "state_check_passed": record.state_check_passed,
             "error": record.error,
             "failure_label": record.failure_label,
+            "attack": spec.attack,
+            "injection_task_id": spec.injection_task_id,
+            "attack_succeeded": record.attack_succeeded,
+            "utility_under_attack": record.utility_under_attack,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -240,7 +251,8 @@ class RunStore:
         row = self._db.execute(
             "SELECT spec, config_hash, git_commit, agentdojo_version, seed, outcome,"
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
-            " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s"
+            " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
+            " attack_succeeded, utility_under_attack"
             " FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -270,6 +282,8 @@ class RunStore:
             started_at=row[13],
             finished_at=row[14],
             wall_latency_s=row[15],
+            attack_succeeded=None if row[16] is None else bool(row[16]),
+            utility_under_attack=None if row[17] is None else bool(row[17]),
             calls=calls,
         )
 

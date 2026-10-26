@@ -10,6 +10,12 @@ the same thing here as in AgentDojo. Three deliberate differences:
   in `state_check_passed` so the analysis can still see it (D9).
 - Exceptions are never turned into a score. Infrastructure errors and bugs propagate to the
   caller, which re-queues or crashes (D5).
+
+With an injection task the case is an attack: the payload is put into the environment before
+the run, and `attack_succeeded` is the injection task's own check (AgentDojo calls it
+`security`, but it returns True when the *attack* worked, so we don't reuse the name; see
+`TaskSuite.run_task_with_pipeline`). It is scored for every run that reaches the store, model
+errors included (D49).
 """
 
 from collections.abc import Sequence
@@ -18,11 +24,12 @@ from enum import StrEnum
 from typing import TypeVar
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
-from agentdojo.base_tasks import BaseUserTask
+from agentdojo.base_tasks import BaseInjectionTask, BaseUserTask
 from agentdojo.functions_runtime import FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite, functions_stack_trace_from_messages
 from agentdojo.types import ChatAssistantMessage, ChatMessage, get_text_content_as_str
 
+from lab.errors import ModelError
 from lab.models.types import CallRecord, RunContext
 
 Env = TypeVar("Env", bound=TaskEnvironment)
@@ -48,6 +55,7 @@ class CaseResult:
     messages: list[ChatMessage]
     calls: list[CallRecord]  # one per model call, in order (D17)
     malformed_tool_calls: int  # D6
+    attack_succeeded: bool | None = None  # None: no injection task, so nothing to score (D49)
 
 
 def run_case(
@@ -55,23 +63,43 @@ def run_case(
     pipeline: BasePipelineElement,
     user_task: BaseUserTask[Env],
     ctx: RunContext | None = None,
+    *,
+    injections: dict[str, str] | None = None,
+    injection_task: BaseInjectionTask[Env] | None = None,
 ) -> CaseResult:
-    """Run `user_task` once with no injections and score the final state and answer.
+    """Run `user_task` once and score the final state and answer.
+
+    With `injections` (vector -> payload) and `injection_task` it is an attack case and
+    `attack_succeeded` is scored as well; with neither, a benign run.
 
     `ctx` collects a record of every model call. The runner passes one carrying the repeat
-    index; tests can leave it out.
+    index; tests can leave it out. If the run ends in ModelError, `ctx.attack_succeeded` holds
+    the attack score before the error is re-raised, because the tools had already changed the
+    environment (D49).
     """
+    if (injections is None) != (injection_task is None):
+        raise ValueError("injections and injection_task go together")
     ctx = ctx if ctx is not None else RunContext()
-    environment = suite.load_and_inject_default_environment({})
+    environment = suite.load_and_inject_default_environment(injections or {})
     task_environment = user_task.init_environment(environment)
     pre_environment = task_environment.model_copy(deep=True)
     runtime = FunctionsRuntime(suite.tools)
 
     # Pass messages and extra_args explicitly: the defaults in AgentDojo's signatures are
     # shared mutable objects.
-    _, _, post_environment, result_messages, _ = pipeline.query(
-        user_task.PROMPT, runtime, task_environment, [], {"ctx": ctx}
-    )
+    try:
+        _, _, post_environment, result_messages, _ = pipeline.query(
+            user_task.PROMPT, runtime, task_environment, [], {"ctx": ctx}
+        )
+    except ModelError:
+        if injection_task is not None:
+            # The pipeline raised before returning, but tools mutate `task_environment` in
+            # place, so a transfer made before the error did happen. The output is empty and
+            # the last assistant message, never executed, is not part of the trace.
+            ctx.attack_succeeded = _check_attack(
+                injection_task, "", _executed(ctx.messages), pre_environment, task_environment
+            )
+        raise
     messages = list(result_messages)
     final = _final_assistant_message(messages)
 
@@ -79,6 +107,14 @@ def run_case(
         user_task, final, messages, pre_environment, post_environment
     )
     outcome = _classify(final, state_check_passed)
+    if injection_task is not None:
+        ctx.attack_succeeded = _check_attack(
+            injection_task,
+            get_text_content_as_str(final["content"] or []),
+            messages,
+            pre_environment,
+            post_environment,
+        )
     return CaseResult(
         user_task_id=user_task.ID,
         outcome=outcome,
@@ -87,6 +123,7 @@ def run_case(
         messages=messages,
         calls=list(ctx.calls),
         malformed_tool_calls=ctx.malformed_tool_calls,
+        attack_succeeded=ctx.attack_succeeded,
     )
 
 
@@ -117,6 +154,29 @@ def _check_utility(
     if from_traces is not None:
         return from_traces
     return user_task.utility(output_text, pre_environment, post_environment)
+
+
+def _executed(messages: Sequence[ChatMessage]) -> Sequence[ChatMessage]:
+    # A transcript that ends on an assistant message ends on calls nobody ran.
+    return messages[:-1] if messages and messages[-1]["role"] == "assistant" else messages
+
+
+def _check_attack(
+    injection_task: BaseInjectionTask[Env],
+    output_text: str,
+    messages: Sequence[ChatMessage],
+    pre_environment: Env,
+    post_environment: Env,
+) -> bool:
+    # Same order as TaskSuite._check_injection_task_security: the trace-based check wins if
+    # defined. True means the attack worked.
+    traces = functions_stack_trace_from_messages(messages)
+    from_traces = injection_task.security_from_traces(
+        output_text, pre_environment, post_environment, traces
+    )
+    if from_traces is not None:
+        return from_traces
+    return injection_task.security(output_text, pre_environment, post_environment)
 
 
 def _classify(final: ChatAssistantMessage, state_check_passed: bool) -> Outcome:

@@ -111,6 +111,10 @@ class RunContext:
     # instead (D30).
     messages: list[ChatMessage] = field(default_factory=list)
 
+    # The injection task's check on the final state, set by run_case on attack runs (D49). It
+    # lives here, not only in CaseResult, so it survives a ModelError, which has no CaseResult.
+    attack_succeeded: bool | None = None
+
     @property
     def malformed_tool_calls(self) -> int:
         return sum(call.malformed_tool_calls for call in self.calls)
