@@ -20,6 +20,11 @@ the same environment, with only that worker's tools:
 
 Every agent shares the run's LabLLM settings (model, client, sampling) through
 `LabLLM.as_agent`. AgentDojo scores the planner's transcript: its final message is the answer.
+
+T3 and T4 are this pipeline with gates (lab/defenses/gates.py, lab/topologies/presets.py): a
+worker's report goes through the handoff gates before the planner gets it, and a worker's
+write calls go through the action gates (GatedRuntime) before they run. With no gates it is T2
+exactly. The prompts never change with the gates (PLAN_M2 §7).
 """
 
 from __future__ import annotations
@@ -40,10 +45,12 @@ from agentdojo.types import (
 )
 from pydantic import BaseModel, Field, ValidationError
 
+from lab.defenses.gates import Gate, GatedRuntime, HandoffCheck, check_handoff, gates_at
 from lab.models.llm_element import LabLLM, MalformedToolCall, malformed_call_result
 from lab.models.types import RunContext
 from lab.topologies.t1 import MAX_ITERS, build_t1, default_system_message
 from lab.tracing.events import (
+    CHECKPOINT,
     WORKERS,
     delegation_event,
     message_event,
@@ -149,8 +156,9 @@ class DelegatingExecutor(BasePipelineElement):
     them already recorded (and the relayed text is never taken for a tool output; markers.py).
     """
 
-    def __init__(self, llm: LabLLM) -> None:
+    def __init__(self, llm: LabLLM, gates: Sequence[Gate] = ()) -> None:
         self.llm = llm  # the model every worker runs on, via `as_agent`
+        self.gates = gates
         self.workers = {delegate_tool_name(w): w for w in WORKER_TOOLS}
 
     def query(
@@ -174,7 +182,8 @@ class DelegatingExecutor(BasePipelineElement):
         results: list[ChatMessage] = []
         for call in last["tool_calls"]:
             # Each result is recorded right away, so the trace keeps the order things happened.
-            sender, result, env = self._run_call(call, env, ctx, worker_runtimes, extra_args)
+            # `query` is the user's request: the loop passes it through unchanged.
+            sender, result, env = self._run_call(call, query, env, ctx, worker_runtimes)
             results.append(result)
             ctx.events.append(message_event(
                 len(ctx.events), PLANNER, PLANNER, result, None,
@@ -186,13 +195,14 @@ class DelegatingExecutor(BasePipelineElement):
     def _run_call(
         self,
         call: FunctionCall,
+        user_request: str,
         env: Env,
         ctx: RunContext,
         worker_runtimes: dict[str, FunctionsRuntime],
-        extra_args: dict[str, Any],
     ) -> tuple[str | None, ChatToolResultMessage, Env]:
         """(sender, tool result, environment). The sender is None for an error the executor
-        itself returns (the tools, as in T1), else the worker that wrote the result."""
+        itself returns (the tools, as in T1), else the worker that wrote the result, or the
+        gate that withheld it."""
         if isinstance(call, MalformedToolCall):
             return None, malformed_call_result(call), env  # D6, as LabToolsExecutor does
         worker = self.workers.get(call.function)
@@ -209,18 +219,24 @@ class DelegatingExecutor(BasePipelineElement):
             1 for e in ctx.events if e.kind == "delegation" and e.payload["worker"] == worker
         )
         agent_id = f"{worker}#{n}"
+        delegation_seq = len(ctx.events)
         ctx.events.append(
-            delegation_event(len(ctx.events), PLANNER, agent_id, worker, call.id, instruction)
+            delegation_event(delegation_seq, PLANNER, agent_id, worker, call.id, instruction)
         )
         llm = self.llm.as_agent(agent_id, worker, principal=PLANNER)
         pipeline = build_t1(
             llm, system_message=worker_system_message(worker), max_iters=WORKER_MAX_ITERS
         )
+        runtime = worker_runtimes[worker]
+        if gates_at(self.gates, "action"):
+            runtime = GatedRuntime(
+                runtime, self.gates, ctx, agent_id=agent_id, worker=worker,
+                instruction=instruction, user_request=user_request,
+                delegation_seq=delegation_seq,
+            )
         # The worker gets the instruction as its request, its own tools and the shared
         # environment. Its tool calls change `env` in place, as in T1.
-        _, _, env, worker_messages, _ = pipeline.query(
-            instruction, worker_runtimes[worker], env, [], {"ctx": ctx}
-        )
+        _, _, env, worker_messages, _ = pipeline.query(instruction, runtime, env, [], {"ctx": ctx})
         final = worker_messages[-1]
         if final["role"] != "assistant":
             raise ValueError(f"Worker {agent_id} ended on a {final['role']!r} message")
@@ -234,9 +250,26 @@ class DelegatingExecutor(BasePipelineElement):
             )
         else:
             report = get_text_content_as_str(final["content"] or [])
-        ctx.events.append(
-            result_event(len(ctx.events), agent_id, worker, PLANNER, call.id, report, error)
-        )
+        # A report goes through the handoff gates, if any. A worker that gave no report (the
+        # round limit) has nothing to check: the planner gets the harness's error directly.
+        gated = error is None and bool(gates_at(self.gates, "handoff"))
+        result_seq = len(ctx.events)
+        ctx.events.append(result_event(
+            result_seq, agent_id, worker, CHECKPOINT if gated else PLANNER, call.id, report, error
+        ))
+        sender = agent_id
+        if gated:
+            check = HandoffCheck(
+                user_request=user_request, worker=worker, instruction=instruction,
+                report=report, sources=(delegation_seq, result_seq),
+            )
+            rejection = check_handoff(
+                self.gates, check, ctx, planner=PLANNER, tool_call_id=call.id,
+                result_seq=result_seq,
+            )
+            if rejection is not None:
+                sender, report, error = rejection.by, "", rejection.message
+        # Approved (or ungated), the report reaches the planner exactly as the worker wrote it.
         result = ChatToolResultMessage(
             role="tool",
             content=[text_content_block_from_string(report)],
@@ -244,7 +277,7 @@ class DelegatingExecutor(BasePipelineElement):
             tool_call=call,
             error=error,
         )
-        return agent_id, result, env
+        return sender, result, env
 
 
 def _error_result(call: FunctionCall, error: str) -> ChatToolResultMessage:
@@ -262,8 +295,9 @@ class T2Pipeline(BasePipelineElement):
     runtime run_case passes in (the suite's tools), and the planner's transcript is the one
     AgentDojo scores."""
 
-    def __init__(self, llm: LabLLM) -> None:
-        self.name = NAME
+    def __init__(self, llm: LabLLM, gates: Sequence[Gate] = (), name: str = NAME) -> None:
+        self.name = name
+        self.gates = gates
         planner = llm.as_agent(PLANNER, PLANNER, tool_target=WORKERS)
         self.planner_runtime = FunctionsRuntime([delegate_function(w) for w in WORKER_TOOLS])
         self.pipeline = AgentPipeline(
@@ -272,7 +306,7 @@ class T2Pipeline(BasePipelineElement):
                 InitQuery(),
                 planner,
                 ToolsExecutionLoop(
-                    [DelegatingExecutor(llm), planner], max_iters=PLANNER_MAX_ROUNDS
+                    [DelegatingExecutor(llm, gates), planner], max_iters=PLANNER_MAX_ROUNDS
                 ),
             ]
         )
@@ -291,6 +325,8 @@ class T2Pipeline(BasePipelineElement):
         if not isinstance(ctx, RunContext):
             raise ValueError("T2 needs a RunContext in extra_args['ctx']")
         ctx.scored_agent = PLANNER
+        for gate in self.gates:
+            gate.start(query, env)  # before any tool call: the environment the run starts from
         args = {**extra_args, "worker_runtimes": worker_runtimes(runtime)}
         query, _, env, messages, _ = self.pipeline.query(
             query, self.planner_runtime, env, messages, args
@@ -312,7 +348,7 @@ def worker_runtimes(runtime: FunctionsRuntime) -> dict[str, FunctionsRuntime]:
     }
 
 
-def build_t2(llm: LabLLM) -> T2Pipeline:
-    """The T2 pipeline. `llm` sets the model and sampling of every agent; its own agent ID is
-    not used."""
-    return T2Pipeline(llm)
+def build_t2(llm: LabLLM, gates: Sequence[Gate] = (), name: str = NAME) -> T2Pipeline:
+    """The T2 pipeline, with `gates` at their checkpoints (T3, T4). `llm` sets the model and
+    sampling of every agent; its own agent ID is not used."""
+    return T2Pipeline(llm, gates, name)

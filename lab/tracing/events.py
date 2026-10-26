@@ -6,7 +6,14 @@ analysis is the same for all topologies. Handoffs between agents are their own e
 - `result`: the worker's final message goes back to the planner (`agent_id` is the worker).
 The same text also shows up as a message in the receiving transcript (the worker's user turn,
 the planner's `delegate` tool result). Those copies are traced too, but only the handoff event
-is searched for markers. Oversight decisions come with slice 4.
+is searched for markers.
+
+Oversight decisions (T3, T4) are `review_verdict` events: one per gate per check, from the agent
+that decided (`reviewer#k`, or `policy`) to the agent whose input the verdict decides (the
+planner at the handoff checkpoint, the worker at the action checkpoint). The payload says what
+was checked (`sources`, the events whose text the gate was shown) and what the recipient gets
+because of the verdict (`delivered`): the report passed on unchanged, a "withheld" notice, or a
+"blocked" tool error. A report waiting for its verdict is addressed to `checkpoint`.
 
 Each event says whose transcript it belongs to (`agent_id`, `agent_role`), who wrote it
 (`from_agent`) and who receives it (`to_agent`). The pseudo-agents `system`, `user` and `tools`
@@ -35,6 +42,9 @@ USER = "user"
 TOOLS = "tools"
 # Where the planner's tool calls go: each one is a delegation, traced as its own event.
 WORKERS = "workers"
+# Where a gated report waits for its verdict, and where a reviewer's reply goes: the checkpoint
+# code reads it and records the outcome as a `review_verdict` event.
+CHECKPOINT = "checkpoint"
 
 
 class TraceEvent(BaseModel):
@@ -121,6 +131,58 @@ def result_event(
         call_idx=None,
         payload={
             "worker": worker_role, "tool_call_id": tool_call_id, "report": report, "error": error,
+        },
+    )
+
+
+def review_verdict_event(
+    seq: int,
+    agent_id: str,
+    agent_role: str,
+    recipient: str,
+    call_idx: int | None,
+    *,
+    gate: str,
+    checkpoint: str,
+    approve: bool,
+    reason: str,
+    unparseable: bool,
+    output: str | None,
+    tool_call_id: str | None,
+    call: dict[str, Any] | None,
+    sources: list[int],
+    forwards: int | None,
+    delivered: str | None,
+) -> TraceEvent:
+    """One gate's verdict on one check (lab/defenses/gates.py).
+
+    - `output`: what a model gate replied, verbatim (None for the policy, which writes nothing);
+    - `sources`: the seqs of the events whose text the gate was shown;
+    - `forwards`: on an approved handoff, the seq of the `result` passed on unchanged;
+    - `delivered`: what `recipient` gets because of this verdict: the report itself (approved
+      handoff), the withheld notice or the block error (rejected), None for an approved call,
+      whose result comes from the tools as usual.
+    """
+    return TraceEvent(
+        seq=seq,
+        agent_id=agent_id,
+        agent_role=agent_role,
+        kind="review_verdict",
+        from_agent=agent_id,
+        to_agent=recipient,
+        call_idx=call_idx,
+        payload={
+            "gate": gate,
+            "checkpoint": checkpoint,
+            "verdict": "approve" if approve else "reject",
+            "reason": reason,
+            "unparseable": unparseable,
+            "output": output,
+            "tool_call_id": tool_call_id,
+            "call": call,
+            "sources": sources,
+            "forwards": forwards,
+            "delivered": delivered,
         },
     )
 

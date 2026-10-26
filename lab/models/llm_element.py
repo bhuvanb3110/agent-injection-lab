@@ -186,12 +186,18 @@ class LabLLM(BasePipelineElement):
             # The trace assumes transcripts only grow. A pipeline that rewrites one is a bug.
             raise ValueError(f"The transcript of agent {self.agent_id!r} was rewritten")
         for message in messages[len(seen) :]:
-            ctx.events.append(self._event(len(ctx.events), message, None))
+            sender = None
+            if message["role"] == "tool" and message["tool_call_id"] is not None:
+                # A result a gate wrote in place of the tools' (a blocked call).
+                sender = ctx.tool_result_senders.get((self.agent_id, message["tool_call_id"]))
+            ctx.events.append(self._event(len(ctx.events), message, None, sender=sender))
 
-    def _event(self, seq: int, message: ChatMessage, call_idx: int | None) -> TraceEvent:
+    def _event(
+        self, seq: int, message: ChatMessage, call_idx: int | None, *, sender: str | None = None
+    ) -> TraceEvent:
         return message_event(
             seq, self.agent_id, self.agent_role, message, call_idx,
-            principal=self.principal, tool_target=self.tool_target,
+            principal=self.principal, tool_target=self.tool_target, sender=sender,
         )
 
 

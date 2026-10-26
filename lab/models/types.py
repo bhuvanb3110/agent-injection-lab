@@ -118,6 +118,9 @@ class RunContext:
     events: list[TraceEvent] = field(default_factory=list)
     # The agent whose transcript AgentDojo scores and `runs.messages` stores.
     scored_agent: str = SINGLE_AGENT
+    # (agent, tool call ID) -> who wrote that tool result, when it wasn't the tools: a gate
+    # that blocked the call (lab/defenses/gates.py). LabLLM traces the result with that sender.
+    tool_result_senders: dict[tuple[str, str], str] = field(default_factory=dict)
 
     # The injection task's check on the final state, set by run_case on attack runs (D49). It
     # lives here, not only in CaseResult, so it survives a ModelError, which has no CaseResult.
