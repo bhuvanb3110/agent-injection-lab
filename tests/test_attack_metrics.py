@@ -1,6 +1,6 @@
 """Attack and oversight metrics (lab/scoring/attack_metrics.py, D69) and the report's checks:
 the cluster bootstrap, flip rates, the safe-unsolved breakdown, prefix_divergence recomputed
-from request keys, and the user_task_11 flag on T5-summary (D70)."""
+from request keys, and the user_task_11 flag on T5-summary (D71)."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -146,7 +146,7 @@ def test_the_report_flags_user_task_11_on_t5_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A faithful summary of user_task_11 that shows its working names the 5.29 fee, which
-    summary_parser_v1 rejects (D65, D70). The report says so next to T5-summary's benign
+    summary_parser_v1 rejects (D65, D71). The report says so next to T5-summary's benign
     utility and shows the utility without that task."""
     faithful = scripted_summaries("ground-truth")
 

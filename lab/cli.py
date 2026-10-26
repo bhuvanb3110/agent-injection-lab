@@ -213,7 +213,7 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
 
 
 def known_limit_notes(benign: Sequence[RunRecord]) -> dict[tuple[str, str, str], list[str]]:
-    """Notes for the benign groups a known limit affects (D70): T5-summary's utility on
+    """Notes for the benign groups a known limit affects (D71): T5-summary's utility on
     user_task_11, shown with and without that task, and how many of its summaries v1 rejected
     for naming an amount."""
     notes: dict[tuple[str, str, str], list[str]] = {}
@@ -407,7 +407,7 @@ def report_text(
     notes: Mapping[tuple[str, str, str], list[str]] | None = None,
 ) -> str:
     """`tasks`: the user tasks the runs cover, to flag those with a known issue (D44).
-    `notes`: extra lines for a (provider, model, topology) group: a known limit (D70)."""
+    `notes`: extra lines for a (provider, model, topology) group: a known limit (D71)."""
     lines = [f"Experiment: {experiment}"]
     if expected is None:
         lines.append(f"Runs stored: {stored} (no config found to count pending runs)")

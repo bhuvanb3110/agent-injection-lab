@@ -36,9 +36,12 @@ Keep this list current as commands are added.
 - `uv run lab run configs/experiments/smoke.yaml` (FakeModels, no key needed)
 - `uv run lab run configs/experiments/baseline_banking.yaml` (real Groq calls; resumable: rerun the same command after a daily cap)
 - `uv run lab run configs/experiments/baseline_banking_repeats.yaml` (repeats 1–2 of the baseline; real Groq calls; resumable)
+- `uv run lab run configs/experiments/smoke_topologies.yaml` (FakeModels, T1 to T5-summary, benign + attack; also run in CI by `tests/test_smoke_topologies.py`)
+- `uv run lab run configs/experiments/m2_exit.yaml` (M2 exit check: real Groq calls, both models, 3 repeats; resumable; run only when Bhuvan says so)
+- `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
 - `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
-- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` takes `--store`
+- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` and `trace` take `--store`
 
 ## Handoff summary
 
