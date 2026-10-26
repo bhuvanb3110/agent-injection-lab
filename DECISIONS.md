@@ -53,6 +53,9 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D45 · Repeats 1 and 2 of the baseline are their own experiment; `lab report` pools experiments and shows per-task flips · Accepted
 - D46 · M4 sample size and provider are decided from measured cost only, never from attack results · Accepted
 - D47 · The canary line and the generic model name mean absolute ASR may differ slightly from AgentDojo's published numbers · Accepted
+- D48 · New RunSpec and config fields are left out of the run ID and config hash at their defaults · Accepted
+- D49 · `attack_succeeded` is scored on every stored attack run, model errors included · Accepted
+- D50 · The attack builder and the known-issue injection tasks · Accepted
 
 ## Milestone 1
 
@@ -540,3 +543,25 @@ Plan: `docs/PLAN_M2.md`, approved 2026-10-25.
   - **One canary reference line** in the payload's signature block (`CNRY` + 8 characters derived from the case), used to measure verbatim propagation (PLAN_M2 §5).
 - **Consequence:** our absolute ASR for this attack may differ slightly from AgentDojo's published `important_instructions` numbers, so it should not be quoted as a like-for-like replication. Comparisons between *our* configurations are unaffected: every topology and defense gets the byte-identical payload for a given case.
 - **Approved by Bhuvan** at plan review.
+
+### D48. New RunSpec and config fields are left out of the run ID and config hash at their defaults (2026-10-25)
+- **Decision:** `RunSpec` gains `attack` and `injection_task_id` (both None for a benign run, and they must be set together). `ExperimentConfig` gains `topologies`, `attack` (`name`, `injection_tasks`) and `include_benign`; `topology: t1` stays valid, and exactly one of `topology` / `topologies` is required. The run ID leaves out `attack` and `injection_task_id` while they are None. The config hash leaves out `topologies`, `attack` and `include_benign` while they are at their defaults (None, None, True), and `topology` when it is unset.
+- **Why:** a run ID that changes for old runs would make a rerun treat finished milestone-1 runs as new, and the config hash stored with them would no longer match their file (the same reasoning as D45).
+- **How it is checked:** `tests/test_golden_hashes.py` pins the config hash, the run count, a digest of the sorted run IDs, and the first and last run ID in expansion order for `smoke`, `baseline_banking` and `baseline_banking_repeats`. The values come from the milestone-1 code and were cross-checked against `results/runs.sqlite` (all 32 baseline run IDs, and the 58 repeat runs stored so far, are in it with these config hashes). A one-off check also read all 90 stored rows back through the new code: every run ID recomputed from the stored spec matched, and the new columns were NULL.
+- **Expansion order:** repeat → case → model → topology, where a case is a user task, benign first and then each injection task. With no attack and one topology this is the milestone-1 order, which the golden test covers.
+- **Rejected:** `exclude_defaults` on the whole model. It would also drop old fields that happen to equal their default (`description: ""`) and change hashes.
+
+### D49. `attack_succeeded` is scored on every stored attack run, model errors included (2026-10-25)
+- **Decision:** `run_case` takes `injections` and `injection_task` (both or neither). It scores `attack_succeeded` with the injection task's `security_from_traces`, else `security`, in AgentDojo's order (`TaskSuite._check_injection_task_security`). AgentDojo's `security` returns True when the *attack worked*; we store it under the name that says so. `utility_under_attack` = solved ∧ ¬attack_succeeded (BRIEF §7).
+- **Model errors:** the tools change the environment in place, so a transfer made before a crash did happen (the reasoning of D9). `run_case` catches `ModelError`, scores the attack on the mutated environment with an empty output, puts it in `RunContext.attack_succeeded`, and re-raises. The scheduler stores it. The last assistant message of a transcript is left out of the function trace, because its calls never ran. Infrastructure errors still propagate unscored and are re-queued (D5).
+- **Store:** `runs` gains `attack`, `injection_task_id`, `attack_succeeded` and `utility_under_attack` through `_ADDED_COLUMNS` (D42's mechanism). Old rows keep NULL, meaning "not applicable", and nothing is backfilled. PLAN_M2 §8 lists more columns (`propagated`, `infection_depth`, `n_handoffs`, ...); each is added in the slice that fills it, so no column exists that nothing writes.
+- **Report guard:** `lab report` computes benign utility on benign runs only and says how many attack runs it left out. Without it, attacked runs would be pooled into the baseline numbers. The attack report is slice 5.
+- **Tested:** an `obedient` FakeModel (user task calls, then the injection task's calls) gives ASR = 1 on all 9 injection tasks, and `ground-truth` gives ASR = 0, both on `user_task_2` through T1; a ModelError after the attack is stored as `model_error` with `attack_succeeded = 1`.
+
+### D50. The attack builder and the known-issue injection tasks (2026-10-25)
+- **Decision:** `lab/attacks/agentdojo.py` builds the D47 payload as a `FixedJailbreakAttack` subclass that overrides `attack()` to format each vector's payload with its own canary. `canary_for(attack, injection_task, user_task, vector)` = `CNRY` + the first 40 bits of the SHA-256 of those four names joined by `|`, as 8 Crockford base32 characters. It depends on the case and never on the run, topology or model, so every topology sees the same bytes (PLAN_M2 §7).
+- **Template guard:** the canary line is inserted by string replacement on AgentDojo's `_JB_STRING`. If AgentDojo changes the signature block, importing the module fails, rather than running an attack nobody has read.
+- **Placeholder target:** `BaseAttack.__init__` wants the pipeline under attack but only stores it. We pass an element that raises if called, so the payload cannot come to depend on the model.
+- **Only the vectors the user task reads are filled**, found with AgentDojo's `get_injection_candidates` (ground-truth run with canary values). The test checks task 0 → bill, task 1 → incoming transaction, task 2 → landlord notice.
+- **Known issues, scored as AgentDojo scores them:** injection tasks 0, 1 and 3 count any transfer to the attacker IBAN as success (`any(x or "" in subject)` parses as `x or (...)`). `KNOWN_ISSUES` records it, and a test sends an unrelated-subject transfer and sees it count. Flagged, not fixed (as D44). Injection task 2 does not have the bug.
+- **Goal markers** (PLAN_M2 §5) are slice 2, with the marker detector.
