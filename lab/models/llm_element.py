@@ -77,6 +77,8 @@ class LabLLM(BasePipelineElement):
         agent_role: str = SINGLE_ROLE,
         principal: str = USER,
         tool_target: str = TOOLS,
+        structured_outputs: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> None:
         self.client = client
         self.provider = provider
@@ -91,10 +93,20 @@ class LabLLM(BasePipelineElement):
         # The edges of its trace events: whom it answers to, and where its tool calls go.
         self.principal = principal
         self.tool_target = tool_target
+        # Whether the model accepts a json_schema `response_format` (providers.yaml, D62), and
+        # the one this agent sends with every call (None: none is sent).
+        self.structured_outputs = structured_outputs
+        self.response_format = response_format
         self.name = f"{provider}/{model_id}"
 
     def as_agent(
-        self, agent_id: str, agent_role: str, *, principal: str = USER, tool_target: str = TOOLS
+        self,
+        agent_id: str,
+        agent_role: str,
+        *,
+        principal: str = USER,
+        tool_target: str = TOOLS,
+        response_format: dict[str, Any] | None = None,
     ) -> LabLLM:
         """The same model, client and sampling, playing another agent of the run (T2+)."""
         return LabLLM(
@@ -109,6 +121,8 @@ class LabLLM(BasePipelineElement):
             agent_role=agent_role,
             principal=principal,
             tool_target=tool_target,
+            structured_outputs=self.structured_outputs,
+            response_format=response_format,
         )
 
     def query(
@@ -126,7 +140,33 @@ class LabLLM(BasePipelineElement):
             # Without a context the call would not be counted, so refuse to make it.
             raise ValueError("LabLLM needs a RunContext in extra_args['ctx']")
 
-        request = ModelRequest(
+        request = self._request(messages, runtime, ctx)
+        # Keep the transcript and the trace in the context, so a run that ends in ModelError
+        # still has both, up to and including what this call was sent.
+        self._record_new_messages(ctx, messages)
+        ctx.transcripts[self.agent_id] = list(messages)
+        assistant = self._call(request, ctx)
+        transcript = [*messages, assistant]
+        ctx.transcripts[self.agent_id] = transcript
+        ctx.events.append(self._event(len(ctx.events), assistant, len(ctx.calls) - 1))
+        self._raise_if_truncated(ctx)
+        return query, runtime, env, transcript, extra_args
+
+    def side_call(
+        self, messages: Sequence[ChatMessage], runtime: FunctionsRuntime, ctx: RunContext
+    ) -> tuple[ChatAssistantMessage, int]:
+        """One call made for a gate on this agent's behalf, e.g. T5-summary's description of a
+        pending action (D65). It is counted in `ctx.calls` like any call, but nothing is added
+        to the agent's transcript or the trace: the gate traces the reply itself. Returns the
+        reply and its row in `calls`."""
+        assistant = self._call(self._request(messages, runtime, ctx), ctx)
+        self._raise_if_truncated(ctx)
+        return assistant, len(ctx.calls) - 1
+
+    def _request(
+        self, messages: Sequence[ChatMessage], runtime: FunctionsRuntime, ctx: RunContext
+    ) -> ModelRequest:
+        return ModelRequest(
             provider=self.provider,
             model_id=self.model_id,
             messages=[message_to_openai(m) for m in messages],
@@ -135,16 +175,15 @@ class LabLLM(BasePipelineElement):
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
             seed=self.seed,
+            response_format=self.response_format,
             repeat_idx=ctx.repeat_idx,
         )
-        # Keep the transcript and the trace in the context, so a run that ends in ModelError
-        # still has both, up to and including what this call was sent.
-        self._record_new_messages(ctx, messages)
-        ctx.transcripts[self.agent_id] = list(messages)
+
+    def _call(self, request: ModelRequest, ctx: RunContext) -> ChatAssistantMessage:
+        """Send the request and append its CallRecord to the context."""
         response = self.client.complete(request)
         assistant = response_to_assistant_message(response)
         malformed = sum(isinstance(c, MalformedToolCall) for c in assistant["tool_calls"] or [])
-
         ctx.calls.append(
             CallRecord(
                 provider=self.provider,
@@ -164,19 +203,18 @@ class LabLLM(BasePipelineElement):
                 agent_id=self.agent_id,
             )
         )
-        transcript = [*messages, assistant]
-        ctx.transcripts[self.agent_id] = transcript
-        ctx.events.append(self._event(len(ctx.events), assistant, len(ctx.calls) - 1))
-        if response.finish_reason == "length":
+        return assistant
+
+    def _raise_if_truncated(self, ctx: RunContext) -> None:
+        if ctx.calls[-1].finish_reason == "length":
             # Cut off by max_tokens: the answer or tool call may be incomplete, so the run ends
-            # here as a model error rather than acting on half a message (D29). The call above
-            # is already counted and the partial message is in the transcript and the trace.
+            # here as a model error rather than acting on half a message (D29). The call is
+            # already counted and the partial message is in the transcript and the trace.
             raise ModelError(
                 f"{self.name}: response cut off at max_tokens={self.max_tokens}",
                 provider=self.provider,
                 subtype="truncated",
             )
-        return query, runtime, env, transcript, extra_args
 
     def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
         """Add a trace event for each message this agent hasn't been sent before: the system

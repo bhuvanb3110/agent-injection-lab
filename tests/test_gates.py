@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 import yaml
-from agentdojo.functions_runtime import FunctionCall
+from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime
 
 from lab.attacks.agentdojo import (
     ATTACK_NAME,
@@ -127,7 +127,8 @@ def test_no_marker_in_the_reviewer_prompts_or_the_policys_messages() -> None:
     handoff = HandoffCheck(user_request="", worker="account", instruction="", report="",
                            sources=())
     action = ToolCallCheck(user_request="", worker="payments", instruction="",
-                           call=FunctionCall(function="get_balance", args={}), sources=())
+                           call=FunctionCall(function="get_balance", args={}), sources=(),
+                           agent_id="payments#1", runtime=FunctionsRuntime([]))
     policy = load_policy()
     texts = [reviewer_system_message(), handoff_request(handoff), action_request(action),
              policy.recipients.message, policy.password.message, policy.user_info.message]
@@ -231,7 +232,9 @@ def test_an_approving_reviewer_leaves_t3s_agent_calls_identical_to_t2s_so_they_h
 
 @pytest.mark.parametrize("reply", [
     "Looks fine to me.",
-    '```json\n{"verdict": "approve", "reason": "ok"}\n```',
+    'Sure: ```json\n{"verdict": "approve", "reason": "ok"}\n```',  # text outside the fence
+    '```json\n{"verdict": "approve", "reason": "ok"}\n``` Hope that helps!',
+    '```json\n{"verdict": "approve"}\n{"verdict": "reject"}\n```',  # two objects
     '{"verdict": "approve", "reason": "ok"} Hope that helps!',
     '{"verdict": "Approve", "reason": "ok"}',
     '{"verdict": "allow"}',
@@ -247,6 +250,16 @@ def test_anything_but_one_json_verdict_is_unparseable(reply: str | None) -> None
 def test_a_json_verdict_parses() -> None:
     assert parse_verdict(' {"verdict": "approve", "reason": "ok"}\n') == (True, "ok")
     assert parse_verdict('{"verdict": "reject", "extra": 1}') == (False, "")
+
+
+@pytest.mark.parametrize("reply", [
+    '```json\n{"verdict": "reject", "reason": "no"}\n```',
+    '```\n{"verdict": "reject", "reason": "no"}\n```',
+    '\n  ```JSON {"verdict": "reject", "reason": "no"} ```  \n',
+])
+def test_a_verdict_in_one_code_fence_parses(reply: str) -> None:
+    """Tolerant of wrapping, strict on content (D62)."""
+    assert parse_verdict(reply) == (False, "no")
 
 
 def test_t3_fails_closed_on_an_unparseable_verdict_at_both_checkpoints() -> None:
@@ -303,7 +316,7 @@ def test_t4_blocks_the_exit_case_attack() -> None:
     assert all(v.call_idx is None for v in verdicts(ctx))  # the policy makes no model call
     assert ctx.markers is not None
     hits = find_hits(ctx.events, ctx.markers)
-    summary = summarise(hits)
+    summary = summarise(hits, ctx.events)
     # The attack still crossed both handoffs and was attempted (acted on), then blocked.
     assert (summary.infection_depth, summary.propagated, summary.acted_on) == (3, True, True)
     by_seq = {e.seq: e for e in ctx.events}
@@ -374,7 +387,7 @@ def test_an_approved_handoff_adds_no_hop() -> None:
         (2, "handoff", "delegation", "payments#1"),
         (3, "tool_call_args", "message", TOOLS),
     ]
-    summary = summarise(find_hits(ctx.events, ctx.markers))
+    summary = summarise(find_hits(ctx.events, ctx.markers), ctx.events)
     assert (summary.infection_depth, summary.propagated) == (3, True)
 
 

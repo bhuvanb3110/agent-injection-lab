@@ -31,6 +31,9 @@ class ModelRequest(BaseModel):
     max_tokens: int | None = None  # None: not sent, the provider default applies
     reasoning_effort: ReasoningEffort | None = None  # None: not sent (D19)
     seed: int | None = None  # None: not sent, the provider picks its own (D27)
+    # OpenAI's `response_format`, e.g. a strict json_schema for the reviewer's verdict (D62).
+    # None: not sent, and left out of the cache key, so no earlier key changes.
+    response_format: dict[str, Any] | None = None
     # Not sent. Separates repeats in the cache so repeat 2 is a fresh sample, not a replay of
     # repeat 1, which would hide run-to-run variance (D13).
     repeat_idx: int = 0

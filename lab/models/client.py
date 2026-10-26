@@ -87,6 +87,9 @@ class OpenAICompatClient:
         if request.seed is not None:
             # Groq and Ollama both accept it; Groq calls it "best effort" (D27).
             kwargs["seed"] = request.seed
+        if request.response_format is not None:
+            # Only for models whose providers.yaml entry lists structured outputs (D62).
+            kwargs["response_format"] = request.response_format
 
         start = time.perf_counter()
         try:

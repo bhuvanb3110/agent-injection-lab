@@ -15,6 +15,10 @@ was checked (`sources`, the events whose text the gate was shown) and what the r
 because of the verdict (`delivered`): the report passed on unchanged, a "withheld" notice, or a
 "blocked" tool error. A report waiting for its verdict is addressed to `checkpoint`.
 
+The simulated human of T5 and T5-summary answers through its own pair of events: the worker's
+`approval_request` (what the human is shown: the raw call, or the worker's description of it)
+and the human's `approval_decision` back to the worker.
+
 Each event says whose transcript it belongs to (`agent_id`, `agent_role`), who wrote it
 (`from_agent`) and who receives it (`to_agent`). The pseudo-agents `system`, `user` and `tools`
 stand for the system prompt, the user's request and the environment; `workers` is where the
@@ -45,6 +49,8 @@ WORKERS = "workers"
 # Where a gated report waits for its verdict, and where a reviewer's reply goes: the checkpoint
 # code reads it and records the outcome as a `review_verdict` event.
 CHECKPOINT = "checkpoint"
+# The role of T3's LLM reviewers (`reviewer#k`). The markers' `reviewer_exposed` looks for it.
+REVIEWER = "reviewer"
 
 
 class TraceEvent(BaseModel):
@@ -182,6 +188,90 @@ def review_verdict_event(
             "call": call,
             "sources": sources,
             "forwards": forwards,
+            "delivered": delivered,
+        },
+    )
+
+
+def approval_request_event(
+    seq: int,
+    worker: str,
+    worker_role: str,
+    human: str,
+    call_idx: int | None,
+    *,
+    gate: str,
+    mode: str,
+    tool_call_id: str | None,
+    call: dict[str, Any],
+    text: str,
+    sources: list[int],
+    forwards: int | None,
+) -> TraceEvent:
+    """A write call waits for the simulated human's approval (T5, T5-summary; D64).
+
+    - `text`: exactly what the human is shown. `raw`: the call itself, as `function({args})`.
+      `summary`: the description the proposing worker wrote in a side call (`call_idx`);
+    - `forwards`: for `raw`, the seq of the worker's message whose call this is, since the text
+      is a copy of it; None for `summary`, which the worker wrote anew;
+    - `sources`: the events the request comes from (the delegation and the call).
+    It is the worker's request, so `agent_id` is the worker and it goes to the human.
+    """
+    return TraceEvent(
+        seq=seq,
+        agent_id=worker,
+        agent_role=worker_role,
+        kind="approval_request",
+        from_agent=worker,
+        to_agent=human,
+        call_idx=call_idx,
+        payload={
+            "gate": gate,
+            "mode": mode,
+            "tool_call_id": tool_call_id,
+            "call": call,
+            "text": text,
+            "sources": sources,
+            "forwards": forwards,
+        },
+    )
+
+
+def approval_decision_event(
+    seq: int,
+    human: str,
+    recipient: str,
+    *,
+    gate: str,
+    request: int,
+    approve: bool,
+    reason: str,
+    unparseable: bool,
+    tool_call_id: str | None,
+    reading: dict[str, Any] | None,
+    delivered: str | None,
+) -> TraceEvent:
+    """The human's answer to the approval request at seq `request` (D64). The human makes no
+    model call and writes only fixed reasons. `reading`: what T5-summary's parser found in the
+    summary (None for `raw`). `delivered`: the block error the worker gets, None on approval."""
+    return TraceEvent(
+        seq=seq,
+        agent_id=human,
+        agent_role=human,
+        kind="approval_decision",
+        from_agent=human,
+        to_agent=recipient,
+        call_idx=None,
+        payload={
+            "gate": gate,
+            "request": request,
+            "verdict": "approve" if approve else "reject",
+            "reason": reason,
+            "unparseable": unparseable,
+            "tool_call_id": tool_call_id,
+            "reading": reading,
+            "sources": [request],
+            "forwards": None,
             "delivered": delivered,
         },
     )

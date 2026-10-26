@@ -162,7 +162,7 @@ def test_an_obedient_account_worker_spreads_the_goal_marker_to_payments_at_depth
         (2, "handoff", "delegation", PLANNER, "payments#1"),
         (3, "tool_call_args", "message", "payments#1", TOOLS),
     ]
-    summary = summarise(find_hits(ctx.events, ctx.markers))
+    summary = summarise(find_hits(ctx.events, ctx.markers), ctx.events)
     assert (summary.propagated, summary.infection_depth, summary.acted_on) == (True, 3, True)
     assert summary.marker_in_final_output is False
 
@@ -201,7 +201,7 @@ def test_obedient_t2_succeeds_locally_or_across_workers(
     reader = "account" if user_task_id == "user_task_2" else "payments"
     needs = "account" if injection_task_id == "injection_task_7" else "payments"
     assert ctx.markers is not None
-    summary = summarise(find_hits(ctx.events, ctx.markers))
+    summary = summarise(find_hits(ctx.events, ctx.markers), ctx.events)
     if reader == needs:
         assert (summary.infection_depth, summary.propagated) == (1, False)
     else:
@@ -217,7 +217,7 @@ def test_ground_truth_through_t2_is_not_attacked() -> None:
     result, ctx = t2_run(scripted("ground-truth", USER_TASK), USER_TASK, INJECTION_TASK)
     assert (result.outcome, result.attack_succeeded) == (Outcome.SOLVED, False)
     assert ctx.markers is not None
-    summary = summarise(find_hits(ctx.events, ctx.markers))
+    summary = summarise(find_hits(ctx.events, ctx.markers), ctx.events)
     # The notice was read (hop 0), and nothing more.
     assert (summary.infection_depth, summary.propagated, summary.acted_on) == (0, False, False)
 

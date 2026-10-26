@@ -38,6 +38,7 @@ def decide(gate: PolicyGate, function: str, **args: object) -> tuple[bool, str]:
     check = ToolCallCheck(
         user_request="", worker="payments", instruction="",
         call=FunctionCall(function=function, args=args, id="c"), sources=(),
+        agent_id="payments#1", runtime=FunctionsRuntime([]),
     )
     verdict = gate.on_tool_call(check, RunContext())
     assert (verdict.agent_id, verdict.agent_role) == (POLICY_ROLE, POLICY_ROLE)

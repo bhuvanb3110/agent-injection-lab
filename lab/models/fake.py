@@ -11,7 +11,7 @@ response cache (the runner's scripted models).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from typing import Any
 
@@ -71,19 +71,30 @@ class ScriptedModel:
     `by_system` maps a system prompt to the steps of every agent sent it, for agents whose
     request isn't known in advance (a T3 reviewer is asked about a report or a call). It is
     looked at first.
+
+    `side` answers one-off calls made on an agent's behalf (T5-summary's description of a
+    pending call), which share the agent's history and so can't be told apart by it. It gets
+    every request first and returns None for those it doesn't answer.
     """
 
     def __init__(
         self,
         scripts: Mapping[str, Sequence[Step]],
         by_system: Mapping[str, Sequence[Step]] | None = None,
+        side: Callable[[ModelRequest], Step | None] | None = None,
     ) -> None:
         self.scripts = {key: list(steps) for key, steps in scripts.items()}
         self.by_system = {key: list(steps) for key, steps in (by_system or {}).items()}
+        self.side = side
         self.requests: list[ModelRequest] = []
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
+        special = self.side(request) if self.side is not None else None
+        if special is not None:
+            if isinstance(special, Exception):
+                raise special
+            return special
         system: str | None = next(
             (m["content"] for m in request.messages if m["role"] == "system"), None
         )

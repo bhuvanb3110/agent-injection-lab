@@ -8,6 +8,9 @@ Tables (DECISIONS.md D2, D25, D51):
 - `trace_events`: every agent's every message, and every handoff, in the order they happened.
 - `marker_hits`: where the attack's markers occur in `trace_events`, with their hop. Derived
   from `trace_events` (lab/tracing/markers.py) and stored for fast reports.
+- `prefix_divergence`: for a run whose preset has a parent (T3 -> T2, T5 -> T3, ...), the first
+  model call where it stops matching the parent's run of the same case, model and repeat
+  (PLAN_M2 §7, D66). Computed from the two runs' stored request keys only.
 - `requests`: every real request sent to a provider, including failed attempts. The rate
   limiter reads it back on start-up so daily usage survives a restart.
 
@@ -20,6 +23,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +58,7 @@ class RunRecord(BaseModel):
     infection_depth: int | None = None
     marker_in_final_output: bool | None = None
     acted_on: bool | None = None
+    reviewer_exposed: bool | None = None  # D63
     calls: list[CallRecord]
     malformed_tool_calls: int
     messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
@@ -84,6 +89,29 @@ class RunRecord(BaseModel):
     @property
     def requests_sent(self) -> int:
         return sum(c.attempts for c in self.calls)
+
+
+@dataclass(frozen=True)
+class PrefixDivergence:
+    run_id: str
+    parent_run_id: str
+    # The first call index whose request key differs from the parent's call at that index (a
+    # call one run has and the other doesn't counts as different). None: the runs never
+    # diverged, i.e. they made exactly the same calls.
+    divergence_call_idx: int | None
+    n_shared_calls: int  # the calls before the divergence; all of them if there is none
+
+
+def prefix_divergence(
+    run_id: str, parent_run_id: str, keys: Sequence[str], parent_keys: Sequence[str]
+) -> PrefixDivergence:
+    """From the two runs' request keys only, never from cache-hit flags, so it is the same
+    whichever run was made first (PLAN_M2 §7)."""
+    shared = 0
+    while shared < min(len(keys), len(parent_keys)) and keys[shared] == parent_keys[shared]:
+        shared += 1
+    same = shared == len(keys) == len(parent_keys)
+    return PrefixDivergence(run_id, parent_run_id, None if same else shared, shared)
 
 
 def _total(values: Sequence[int | None]) -> int | None:
@@ -183,6 +211,12 @@ CREATE TABLE IF NOT EXISTS marker_hits (
     PRIMARY KEY (run_id, event_seq, marker, field),
     FOREIGN KEY (run_id, event_seq) REFERENCES trace_events(run_id, seq)
 );
+CREATE TABLE IF NOT EXISTS prefix_divergence (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    parent_run_id TEXT NOT NULL REFERENCES runs(run_id),
+    divergence_call_idx INTEGER,
+    n_shared_calls INTEGER NOT NULL
+);
 """
 
 # Columns added after the first stores were written, as (table, column, type). A store created
@@ -200,6 +234,7 @@ _ADDED_COLUMNS = [
     ("runs", "marker_in_final_output", "INTEGER"),  # D51
     ("runs", "acted_on", "INTEGER"),  # D51
     ("calls", "agent_id", "TEXT"),  # D51
+    ("runs", "reviewer_exposed", "INTEGER"),  # D63
 ]
 
 
@@ -257,6 +292,7 @@ class RunStore:
             "infection_depth": record.infection_depth,
             "marker_in_final_output": record.marker_in_final_output,
             "acted_on": record.acted_on,
+            "reviewer_exposed": record.reviewer_exposed,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -333,7 +369,7 @@ class RunStore:
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
-            " marker_in_final_output, acted_on"
+            " marker_in_final_output, acted_on, reviewer_exposed"
             " FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -369,6 +405,7 @@ class RunStore:
             infection_depth=row[19],
             marker_in_final_output=_bool(row[20]),
             acted_on=_bool(row[21]),
+            reviewer_exposed=_bool(row[22]),
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),
@@ -399,6 +436,34 @@ class RunStore:
             MarkerHit(event_seq=r[0], marker=r[1], marker_kind=r[2], field=r[3], hop=r[4])
             for r in rows
         ]
+
+    def request_keys(self, run_id: str) -> list[str]:
+        """The request key of each of a run's model calls, in call order."""
+        rows = self._db.execute(
+            "SELECT record FROM calls WHERE run_id = ? ORDER BY idx", (run_id,)
+        )
+        return [CallRecord.model_validate_json(r[0]).request_key for r in rows]
+
+    def save_prefix_divergence(self, run_id: str, parent_run_id: str) -> PrefixDivergence:
+        """Compute and insert the row for a stored run and its stored parent run (D66)."""
+        row = prefix_divergence(
+            run_id, parent_run_id, self.request_keys(run_id), self.request_keys(parent_run_id)
+        )
+        with self._db:
+            self._db.execute(
+                "INSERT INTO prefix_divergence (run_id, parent_run_id, divergence_call_idx,"
+                " n_shared_calls) VALUES (?, ?, ?, ?)",
+                (row.run_id, row.parent_run_id, row.divergence_call_idx, row.n_shared_calls),
+            )
+        return row
+
+    def get_prefix_divergence(self, run_id: str) -> PrefixDivergence | None:
+        found = self._db.execute(
+            "SELECT run_id, parent_run_id, divergence_call_idx, n_shared_calls"
+            " FROM prefix_divergence WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return None if found is None else PrefixDivergence(*found)
 
     def set_failure_label(self, run_id: str, label: str | None) -> None:
         """The one update the store allows: a failure label is an annotation added after the

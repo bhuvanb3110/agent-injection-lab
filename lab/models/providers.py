@@ -49,11 +49,21 @@ class Sampling(_Strict):
     checked: date
 
 
+class StructuredOutputs(_Strict):
+    """The model accepts `response_format` {"type": "json_schema", ...} (D62). `strict`: the
+    provider decodes under the schema's constraints, so the reply always matches it."""
+
+    strict: bool
+    source: str
+    checked: date
+
+
 class ModelInfo(_Strict):
     tool_calling: bool
     price: Price
     limits: Limits
     sampling: Sampling | None = None
+    structured_outputs: StructuredOutputs | None = None  # None: not documented, never sent
 
 
 class ProviderConfig(_Strict):

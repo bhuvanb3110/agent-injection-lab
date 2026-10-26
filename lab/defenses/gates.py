@@ -17,10 +17,11 @@ BRIEF §4's interface is `on_tool_call(call, ctx) -> Allow | Block | AskHuman` a
 `on_handoff(message, ctx) -> message`. Here both return a `Verdict`, and the checkpoint code
 turns a rejection into the notice or error, so every gate rewrites messages the same way and a
 gate can't alter an approved message. There is no AskHuman: the simulated human of T5 is a
-gate of its own (slice 4b). `on_untrusted_input` waits for M4.
+gate of its own (lab/defenses/human.py). `on_untrusted_input` waits for M4.
 
-Every verdict, approvals included, is traced as a `review_verdict` event (lab/tracing/events.py),
-so the analysis can say which gate at which checkpoint caught what.
+Every verdict, approvals included, is traced (lab/tracing/events.py), so the analysis can say
+which gate at which checkpoint caught what: a reviewer's or the policy's as a `review_verdict`,
+the human's as an `approval_decision` answering the `approval_request` the human gate traced.
 """
 
 from __future__ import annotations
@@ -40,7 +41,12 @@ from agentdojo.functions_runtime import (
 from pydantic import ValidationError
 
 from lab.models.types import RunContext
-from lab.tracing.events import TraceEvent, json_safe, review_verdict_event
+from lab.tracing.events import (
+    TraceEvent,
+    approval_decision_event,
+    json_safe,
+    review_verdict_event,
+)
 
 Checkpoint = Literal["handoff", "action"]
 CHECKPOINTS: tuple[Checkpoint, ...] = ("handoff", "action")
@@ -76,6 +82,8 @@ class ToolCallCheck:
     instruction: str
     call: FunctionCall
     sources: tuple[int, ...]
+    agent_id: str  # the worker instance that made the call, e.g. "payments#1"
+    runtime: FunctionsRuntime  # the worker's tools, for a gate that asks the worker (T5-summary)
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,10 @@ class Verdict:
     output: str | None = None  # a model gate's reply, verbatim
     # The reply couldn't be read as a verdict, so the gate failed closed (reviewer_unparseable).
     unparseable: bool = False
+    # Set by the human gate: the seq of the `approval_request` it traced. The verdict is then
+    # traced as the `approval_decision` answering it, not as a `review_verdict`.
+    approval_request: int | None = None
+    reading: dict[str, Any] | None = None  # what T5-summary's parser read in the summary
 
 
 class Gate(Protocol):
@@ -195,16 +207,25 @@ class GatedRuntime(FunctionsRuntime):
         call, call_seq = self._pending_call(function, kwargs)
         check = ToolCallCheck(
             user_request=self.user_request, worker=self.worker, instruction=self.instruction,
-            call=call, sources=(self.delegation_seq, call_seq),
+            call=call, sources=(self.delegation_seq, call_seq), agent_id=self.agent_id,
+            runtime=self,
         )
         for gate in self.gates:
             verdict = gate.on_tool_call(check, self.ctx)
             error = None if verdict.approve else blocked_error(gate, verdict)
-            self.ctx.events.append(_verdict_event(
-                self.ctx, gate, "action", verdict, self.agent_id, call.id,
-                {"function": call.function, "args": json_safe(dict(call.args))}, check.sources,
-                forwards=None, delivered=error,
-            ))
+            if verdict.approval_request is not None:
+                self.ctx.events.append(approval_decision_event(
+                    len(self.ctx.events), verdict.agent_id, self.agent_id, gate=gate.name,
+                    request=verdict.approval_request, approve=verdict.approve,
+                    reason=verdict.reason, unparseable=verdict.unparseable,
+                    tool_call_id=call.id, reading=verdict.reading, delivered=error,
+                ))
+            else:
+                self.ctx.events.append(_verdict_event(
+                    self.ctx, gate, "action", verdict, self.agent_id, call.id,
+                    {"function": call.function, "args": json_safe(dict(call.args))},
+                    check.sources, forwards=None, delivered=error,
+                ))
             if error is not None:
                 # The worker's LabLLM traces this result as the gate's, not the tools'.
                 assert call.id is not None  # LabLLM gives every call an ID
@@ -261,15 +282,24 @@ def _verdict_event(
 
 
 def gate_decisions(events: Sequence[TraceEvent]) -> Counter[str]:
-    """Verdicts per `<gate>@<checkpoint>:<verdict>`, plus `reviewer_unparseable`: the verdicts
-    that failed closed because the reply couldn't be read. Computed from the trace, as the
-    report will (PLAN_M2 §8 `gate_decisions`)."""
+    """Verdicts per `<gate>@<checkpoint>:<verdict>`, plus the ones that failed closed because
+    what the gate read couldn't be parsed: `reviewer_unparseable` (a reviewer's reply) and
+    `summary_unparseable` (a worker's summary, T5-summary). Computed from the trace, as the
+    report will (PLAN_M2 §8 `gate_decisions`). The human decides at the action checkpoint."""
     counts: Counter[str] = Counter()
     for e in events:
-        if e.kind != "review_verdict":
-            continue
         p = e.payload
-        counts[f"{p['gate']}@{p['checkpoint']}:{p['verdict']}"] += 1
-        if p["unparseable"]:
-            counts["reviewer_unparseable"] += 1
+        if e.kind == "review_verdict":
+            counts[f"{p['gate']}@{p['checkpoint']}:{p['verdict']}"] += 1
+            if p["unparseable"]:
+                counts["reviewer_unparseable"] += 1
+        elif e.kind == "approval_decision":
+            counts[f"{p['gate']}@action:{p['verdict']}"] += 1
+            if p["unparseable"]:
+                counts["summary_unparseable"] += 1
     return counts
+
+
+def approvals_requested(events: Sequence[TraceEvent]) -> int:
+    """How many times the run asked the human: the human's workload (PLAN_M2 Q4)."""
+    return sum(e.kind == "approval_request" for e in events)

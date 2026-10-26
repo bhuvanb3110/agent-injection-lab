@@ -12,14 +12,23 @@ What it is shown:
 Never the workers' tool outputs.
 
 It must answer with one JSON object, `{"verdict": "approve" | "reject", "reason": "..."}`.
-Anything else (code fences, extra text, another verdict word, no text at all) is unparseable,
-and the gate **fails closed**: the report is withheld or the call is blocked, and the verdict is
-marked `unparseable` so `reviewer_unparseable` counts its utility cost (lab/defenses/gates.py).
+Parsing is strict on content and tolerant of wrapping (D62): surrounding whitespace and one
+code fence around the object are accepted. Anything else (extra text, another verdict word, a
+missing or non-string reason, no text at all) is unparseable, and the gate **fails closed**:
+the report is withheld or the call is blocked, and the verdict is marked `unparseable` so
+`reviewer_unparseable` counts its utility cost (lab/defenses/gates.py).
+
+On a model whose providers.yaml entry lists structured outputs (the gpt-oss models on Groq),
+each reviewer call also sends `VERDICT_FORMAT`, a strict json_schema, so the provider decodes
+under the schema and the reply always parses. Other models (the scripted ones, Ollama) get the
+prompt alone.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from typing import Any
 
 from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline
 from agentdojo.agent_pipeline.basic_elements import InitQuery, SystemMessage
@@ -29,11 +38,33 @@ from agentdojo.types import get_text_content_as_str
 from lab.defenses.gates import Checkpoint, HandoffCheck, ToolCallCheck, Verdict
 from lab.models.llm_element import LabLLM
 from lab.models.types import RunContext
-from lab.tracing.events import CHECKPOINT
+from lab.tracing.events import CHECKPOINT, REVIEWER
 
 NAME = "llm_reviewer"
-REVIEWER_ROLE = "reviewer"
+REVIEWER_ROLE = REVIEWER
 UNPARSEABLE_REASON = "its verdict could not be read, so the step was stopped."
+
+# Groq's strict mode needs every property in `required` and `additionalProperties: false`
+# (https://console.groq.com/docs/structured-outputs, checked 2026-10-26).
+VERDICT_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "verdict",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["approve", "reject"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["verdict", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+# One code fence around the whole reply, with an optional language tag. Nothing may come
+# before or after it.
+_FENCE = re.compile(r"```[A-Za-z]*[ \t]*\n?(.*?)\n?[ \t]*```", re.DOTALL)
 
 
 def reviewer_system_message() -> str:
@@ -73,11 +104,16 @@ def action_request(check: ToolCallCheck) -> str:
 
 def parse_verdict(text: str | None) -> tuple[bool, str] | None:
     """(approve, reason) from a reply that is exactly one JSON object with `verdict` "approve"
-    or "reject" and, optionally, a string `reason`. Other keys are ignored. None: unparseable."""
+    or "reject" and, optionally, a string `reason`. Other keys are ignored. Surrounding
+    whitespace and one code fence around the whole object are allowed. None: unparseable."""
     if text is None:
         return None
+    body = text.strip()
+    fenced = _FENCE.fullmatch(body)
+    if fenced is not None:
+        body = fenced.group(1).strip()
     try:
-        value = json.loads(text.strip())
+        value = json.loads(body)
     except json.JSONDecodeError:
         return None
     if not isinstance(value, dict) or value.get("verdict") not in ("approve", "reject"):
@@ -109,7 +145,10 @@ class LLMReviewer:
             1 for e in ctx.events if e.kind == "review_verdict" and e.agent_role == REVIEWER_ROLE
         )
         agent_id = f"{REVIEWER_ROLE}#{k}"
-        llm = self.llm.as_agent(agent_id, REVIEWER_ROLE, principal=CHECKPOINT)
+        response_format = VERDICT_FORMAT if self.llm.structured_outputs else None
+        llm = self.llm.as_agent(
+            agent_id, REVIEWER_ROLE, principal=CHECKPOINT, response_format=response_format
+        )
         pipeline = AgentPipeline([SystemMessage(reviewer_system_message()), InitQuery(), llm])
         _, _, _, messages, _ = pipeline.query(
             request, FunctionsRuntime([]), EmptyEnv(), [], {"ctx": ctx}

@@ -18,12 +18,16 @@ from lab import provenance
 from lab.attacks.agentdojo import build_injections, markers_for
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
-from lab.domains.agentdojo_bridge.scripted import scripted_reviewers, scripts_by_request
+from lab.domains.agentdojo_bridge.scripted import (
+    scripted_reviewers,
+    scripted_summaries,
+    scripts_by_request,
+)
 from lab.models.cache import CachingClient, ResponseCache
 from lab.models.client import ChatClient, OpenAICompatClient
 from lab.models.fake import FAKE_PROVIDER, ScriptedModel
 from lab.models.llm_element import LabLLM
-from lab.models.providers import ProviderConfig
+from lab.models.providers import ModelInfo, ProviderConfig
 from lab.models.types import RunContext
 from lab.scheduler.clock import Clock
 from lab.scheduler.limits import DAY_S, RateLimiter
@@ -68,9 +72,11 @@ class ExperimentRunner:
         self.suite = load_banking_suite()
         self.limiters: dict[str, RateLimiter] = {}
         self.clients: dict[str, ChatClient] = {}  # real providers only, one per provider
+        self.model_infos: dict[str, ModelInfo] = {}
         for ref in config.models:
             info = model_info(ref, providers)
             key = model_key(ref.provider, ref.model_id)
+            self.model_infos[key] = info
             self.limiters[key] = RateLimiter(
                 ref.provider,
                 ref.model_id,
@@ -117,10 +123,12 @@ class ExperimentRunner:
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
             # Keyed by request, not popped in call order, so cache hits can't skew it (D54).
-            # Reviewers (T3) are recognised by their system prompt.
+            # Reviewers (T3) are recognised by their system prompt, T5-summary's side calls by
+            # their last message.
             inner = ScriptedModel(
                 scripts_by_request(spec.model_id, self.suite, task, injection_task, spec.topology),
                 by_system=scripted_reviewers(spec.model_id),
+                side=scripted_summaries(spec.model_id),
             )
         else:
             inner = self.clients[spec.provider]
@@ -141,6 +149,9 @@ class ExperimentRunner:
             max_tokens=spec.max_tokens,
             reasoning_effort=spec.reasoning_effort,
             seed=spec.seed,
+            structured_outputs=self.model_infos[
+                model_key(spec.provider, spec.model_id)
+            ].structured_outputs is not None,
         )
         return run_case(
             self.suite,
@@ -152,5 +163,7 @@ class ExperimentRunner:
         )
 
     def run(self, progress: ProgressFn | None = None) -> SchedulerReport:
-        scheduler = Scheduler(self.store, self.run_one, self.clock, self.provenance())
+        scheduler = Scheduler(
+            self.store, self.run_one, self.clock, self.provenance(), parents=presets.parents()
+        )
         return scheduler.run(self.specs, progress=progress)

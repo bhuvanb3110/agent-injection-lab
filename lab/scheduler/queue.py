@@ -15,12 +15,16 @@ What happens to a run, by how it ends:
 Runs execute one at a time. That keeps the limiter and the store simple. While one model is
 throttled the scheduler waits instead of switching to another model's runs, which is slower but
 easy to reason about.
+
+After each stored run, the scheduler records its `prefix_divergence` against its parent preset's
+run (`parents`, from lab/topologies/presets.py), and its children's against it: whichever run of
+a pair is stored second inserts the row (PLAN_M2 §7, D66).
 """
 
 from __future__ import annotations
 
 from collections import Counter, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -74,8 +78,11 @@ class Scheduler:
         provenance: Provenance,
         *,
         max_requeues: int = DEFAULT_MAX_REQUEUES,
+        parents: Mapping[str, str] | None = None,
     ) -> None:
-        """`run_fn` builds the pipeline for a spec and runs it with the given context."""
+        """`run_fn` builds the pipeline for a spec and runs it with the given context.
+        `parents`: topology -> its parent topology, for `prefix_divergence`."""
+        self.parents = dict(parents or {})
         self.store = store
         self.run_fn = run_fn
         self.clock = clock
@@ -137,10 +144,24 @@ class Scheduler:
             else:
                 record = self._record(spec, ctx, started, result=result)
             self.store.save_run(record)
+            self._save_divergences(spec)
             report.completed.append(spec.run_id)
             subtype = f"/{record.outcome_subtype}" if record.outcome_subtype else ""
             tell(spec, record.outcome + subtype)
         return report
+
+    def _save_divergences(self, spec: RunSpec) -> None:
+        """The prefix_divergence rows this run completes: its own against its parent's run,
+        and each child's run against it, for every pair whose two runs are now stored."""
+        pairs = [
+            (spec.model_copy(update={"topology": child}), spec)
+            for child, parent in self.parents.items() if parent == spec.topology
+        ]
+        if spec.topology in self.parents:
+            pairs.append((spec, spec.model_copy(update={"topology": self.parents[spec.topology]})))
+        for child, parent in pairs:
+            if self.store.has_run(child.run_id) and self.store.has_run(parent.run_id):
+                self.store.save_prefix_divergence(child.run_id, parent.run_id)
 
     def _record(
         self,
@@ -217,13 +238,14 @@ def _marker_fields(ctx: RunContext) -> dict[str, Any]:
     if ctx.markers is None:
         return {}
     hits = find_hits(ctx.events, ctx.markers)
-    summary = summarise(hits)
+    summary = summarise(hits, ctx.events)
     return {
         "marker_hits": hits,
         "propagated": summary.propagated,
         "infection_depth": summary.infection_depth,
         "marker_in_final_output": summary.marker_in_final_output,
         "acted_on": summary.acted_on,
+        "reviewer_exposed": summary.reviewer_exposed,
     }
 
 

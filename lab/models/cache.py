@@ -20,8 +20,12 @@ from lab.models.types import ModelRequest, ModelResponse
 
 
 def canonical_json(request: ModelRequest) -> str:
+    fields = request.model_dump(mode="json")
+    if fields["response_format"] is None:
+        # Added in milestone 2 (D62). Left out when unset, so every earlier key stays the same.
+        del fields["response_format"]
     return json.dumps(
-        request.model_dump(mode="json"),
+        fields,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

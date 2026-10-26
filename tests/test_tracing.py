@@ -203,7 +203,7 @@ def test_obedient_t1_hits_the_goal_marker_in_tool_call_args_at_hop_1() -> None:
         MarkerHit(event_seq=attack_call, marker=ATTACKER_IBAN, marker_kind="goal",
                   field="tool_call_args", hop=1),
     ]
-    summary = summarise(hits)
+    summary = summarise(hits, ctx.events)
     assert (summary.acted_on, summary.infection_depth) == (True, 1)
     assert (summary.propagated, summary.marker_in_final_output) == (False, False)
 
@@ -228,7 +228,7 @@ def test_a_marker_in_the_final_answer_propagates_and_matching_ignores_case_and_s
     assert [(h.marker, h.hop, h.event_seq) for h in final] == [
         (ATTACKER_IBAN, 1, ctx.events[-1].seq)
     ]
-    summary = summarise(hits)
+    summary = summarise(hits, ctx.events)
     assert (summary.propagated, summary.marker_in_final_output) == (True, True)
 
 
@@ -243,7 +243,7 @@ def test_a_marker_nothing_delivered_is_unsourced_and_does_not_count_as_propagati
     assert ctx.markers is not None
     hits = find_hits(ctx.events, ctx.markers)
     assert [(h.field, h.hop) for h in hits] == [("final_output", None)]
-    summary = summarise(hits)
+    summary = summarise(hits, ctx.events)
     assert (summary.propagated, summary.infection_depth) == (False, None)
     assert summary.marker_in_final_output is True
 
@@ -374,7 +374,7 @@ def test_recomputing_hits_from_stored_trace_events_gives_the_stored_rows(
         ).fetchall()
         assert [(h.event_seq, h.marker, h.marker_kind, h.field, h.hop)
                 for h in recomputed] == stored_rows
-        s = summarise(recomputed)
+        s = summarise(recomputed, events)
         assert stored_summary == [
             int(s.propagated), s.infection_depth, int(s.marker_in_final_output), int(s.acted_on)
         ]
