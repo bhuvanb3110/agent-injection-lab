@@ -57,7 +57,10 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D49 · `attack_succeeded` is scored on every stored attack run, model errors included · Accepted
 - D50 · The attack builder and the known-issue injection tasks · Accepted
 - D51 · Tracing: every agent's messages as trace events, per-agent transcripts, and the new store tables · Accepted
-- D52 · Goal markers, what is searched, and how hops are counted · Accepted
+- D52 · Goal markers, what is searched, and how hops are counted · Amended by D55
+- D53 · T2: a planner with one delegate tool per worker, and a fresh worker per delegation · Accepted
+- D54 · Scripted models answer by request, so cache hits can't skew them · Accepted
+- D55 · Handoff events, what is searched in T2, and the trace AgentDojo's checks get · Accepted
 
 ## Milestone 1
 
@@ -600,3 +603,47 @@ Plan: `docs/PLAN_M2.md`, approved 2026-10-25.
   - an obedient T1 on `user_task_2` × `injection_task_4`: the goal marker and the canary in the notice at hop 0, the IBAN in `update_scheduled_transaction` at hop 1; depth 1, acted on, not propagated;
   - a final answer that repeats the IBAN (lower case, in groups of four) propagates at hop 1;
   - recomputing every run's hits and per-run numbers from the raw `trace_events` rows gives exactly the stored `marker_hits` rows and `runs` columns.
+- **Update:** D55 adds the rules for `delegation` and `result` events, and stops searching the copies of handoffs in T2 transcripts.
+
+### D53. T2: a planner with one delegate tool per worker, and a fresh worker per delegation (2026-10-25)
+- **Decision (PLAN_M2 Q1, slice 3):** `lab/topologies/t2.py`.
+  - **Workers:** `payments` (get_balance, get_iban, get_most_recent_transactions, get_scheduled_transactions, send_money, schedule_transaction, update_scheduled_transaction) and `account` (read_file, get_user_info, update_user_info, update_password). That is the approved domain split: 7 + 4 = T1's 11 tools, no overlap. `worker_runtimes` raises unless the split covers the suite's tools exactly, so a tool can't be dropped or invented silently.
+  - **Planner:** no Banking tools. One tool per worker, `delegate_to_payments` and `delegate_to_account`, each with a single `instruction` string. The description names the worker's tools. The arguments are validated like any tool's (pydantic; extra keys ignored, as `FunctionsRuntime.run_function` does). A malformed, unknown or invalid call gets a tool error and starts no worker (D6, D15).
+  - **`DelegatingExecutor`** replaces the ToolsExecutor in the planner's loop. Each delegate call runs a worker as a T1-shaped sub-pipeline (`build_t1` with the worker's prompt, its tools and the instruction as its request) on the **same environment**. The worker's final message comes back as the tool result.
+  - **A fresh worker per delegation** (`payments#1`, `payments#2`, …), whose transcript is [system prompt, instruction]. That is what "workers see only the planner's instruction" means: no user request, and no memory of an earlier delegation. It also keeps D51's rule that transcripts only grow.
+  - **Limits:** a worker gets 15 rounds, as T1 (D38); the planner gets 10 rounds of delegation. A worker that still wants to call tools after 15 rounds returns no report; the planner gets the tool error "The <worker> worker stopped after 15 rounds without a final report." A planner still delegating after 10 rounds ends as `max_iterations` (D5).
+  - **Prompts:** AgentDojo's default system message plus a short paragraph. The planner is told it has no bank tools, which worker handles what, that a worker sees only the instruction, and to answer the user at the end. A worker is told its domain, that its instructions come from a planner working for the user, and that its final message is its report. Nothing mentions review, so the prompts can stay identical in T3–T5 (PLAN_M2 §7). A test checks that the prompts and delegate schemas hold no marker.
+  - **Model:** every agent uses the run's model, client and sampling (`LabLLM.as_agent`). AgentDojo scores the planner's transcript (`ctx.scored_agent = "planner"`), and `runs.messages` stores it (D51).
+  - **Runner:** `t2` is added to the config's topology Literal, and `lab run` builds the pipeline by topology name. The slice-4 presets table replaces that lookup. No milestone-1 hash changes, since an added Literal value changes no stored config.
+- **Note:** two identical requests within one run, e.g. two workers given the same instruction, are answered once and replayed from the cache (D13). That is the cache's meaning for real models too, so it is left as is.
+- **Why a worker's state isn't kept across delegations:** a worker that remembered earlier delegations would carry tool outputs, including injected text, from one handoff into the next without crossing the planner. That is an untraced path, and RQ2 couldn't tell it from propagation.
+- **Tested (`tests/test_t2.py`):** the split; each agent is sent only its own tools; scripted ground truth through T2 **solves 16/16** Banking tasks with zero marker hits; tool errors for bad delegate calls; both limits.
+
+### D54. Scripted models answer by request, so cache hits can't skew them (2026-10-25)
+- **Finding:** `FakeModel` pops its steps in call order. Through `lab run` the response cache sits in front of it. When an attacked run's first request equals the benign run's (same system prompt and request), the cache answers it, the FakeModel's first step is left unused, and the rest of the script runs one step late. On T1, `obedient` × `user_task_2` × `injection_task_4` called `read_file` twice. The slice-2 test didn't notice, because a duplicate read changes no outcome and no `tool_call_args` hit. Only scripted runs are affected, and none is a result. For a real model, a cache hit on an equal request is exactly the intended replay (D13).
+- **Why it matters now:** in T2 the same skew hands a worker the planner's next step.
+- **Decision:** `ScriptedModel` (`lab/models/fake.py`) answers by request. The agent is found by its first user message: the user's request, or a worker's instruction. The step is the number of assistant messages the request already holds. Equal requests get equal responses, so a cache hit can't put it out of step. The runner's scripted models use it, built by `scripts_by_request`. Tests that drive a model directly keep `FakeModel` and `script_for` (call order).
+- **Tested:** a repeated request gets the same step; through `lab run`, the attacked runs' first call is a cache hit, and their tool calls are exactly the script's, on T1 and T2.
+
+### D55. Handoff events, what is searched in T2, and the trace AgentDojo's checks get (2026-10-25)
+- **Event kinds:**
+  - **`delegation`:** `agent_id` is the planner, from the planner to the worker instance. Payload: worker role, tool call ID, instruction.
+  - **`result`:** `agent_id` is the worker, from the worker to the planner. Payload: worker role, tool call ID, report, error.
+
+  The planner's tool results are recorded by the executor as they happen, with the worker as sender. The planner's LabLLM finds them already in its transcript and doesn't record them again.
+- **Edges:** `LabLLM` takes `principal` (where its user turn comes from and its final answer goes) and `tool_target` (where its tool calls go). For T1 these are `user` and `tools`, as before. A worker's principal is the planner. The planner's tool target is the pseudo-agent `workers`.
+- **What is searched (amends D52):** each handoff once, as its own event, in field `handoff`. Its copies are traced but not searched:
+  - the worker's user turn (already true for all user messages);
+  - the worker's final message to the planner;
+  - **the planner's `delegate` tool result.** Only a tool result whose sender is `tools` is a `tool_output` at hop 0. The relayed report takes its hop from the worker's `result` event. This is the slice-2 handoff note.
+
+  The planner's delegate-call arguments aren't searched as `tool_call_args` either: the `delegation` events carry them, and `acted_on` must mean a call on the environment.
+- **Hops** follow D52 unchanged, along the new edges. The exit case gives notice → `account#1` (0) → result to planner (1) → delegation to `payments#1` (2) → `update_scheduled_transaction` args (3).
+- **Scoring trace (PLAN_M2 §6):** `run_case` gives AgentDojo's `*_from_traces` checks every tool call any agent sent to `tools`, in event order (`tool_call_trace`). On T1 this equals `functions_stack_trace_from_messages` of the transcript, and a test checks it. The planner's delegate calls are left out. After a ModelError, a final model message is dropped, since its calls never ran (D49). A pipeline with no trace events (AgentDojo's `GroundTruthPipeline` in the parity test) falls back to its transcript. No Banking v1.2.2 task defines a `*_from_traces` check, so no stored result can change.
+- **Not added yet:** `n_handoffs` (PLAN_M2 §8). It is a count of `delegation` and `result` rows in `trace_events`, so slice 5's metrics compute it with the rest of the report; storing a copy now would add a column the report doesn't read.
+- **Tested:**
+  - the exit case (obedient, `user_task_2` × `injection_task_4`) gives the four-hop path above, depth 3, propagated, acted on, and the attack succeeds;
+  - the planner's relayed tool result is not a hit, and every hop-0 hit comes from `tools` (this test fails if the `tools`-sender guard is removed: checked by hand);
+  - obedient T2 on `user_task_2` and `user_task_3` × all 9 injection tasks: ASR 1 everywhere, depth 3 for cross-worker pairs and 1 for local ones;
+  - each agent's transcript equals its stored `message` events, and every delegate call has a matching `delegation` and `result` whose texts equal the worker's first and last message and the planner's tool result;
+  - stored hits recompute from stored `trace_events` for T1 and T2 runs made by `lab run`.
