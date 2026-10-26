@@ -85,4 +85,4 @@ The smoke runs use scripted FakeModels, so their numbers check the plumbing and 
 - AgentDojo has known quirks. `user_task_9` rewards inaction, and injection tasks 0, 1 and 3 count any transfer to the attacker IBAN as success. Both are flagged in reports and scored as AgentDojo does.
 - The simulated human is deterministic. T5 is an upper bound, and T5-summary's parser is frozen at v1 with documented limits (D71).
 - The canary line and a generic model name mean absolute attack success may differ slightly from AgentDojo's published numbers. Comparisons between our own configurations are unaffected (D47).
-- A "question to the user" detector (`ended_with_question`) is a lower bound: it missed 2 of the 3 hand-labelled baseline cases (D73).
+- "Asked the user" is reported as a range, not a count: `ended_with_question` is a lower bound (precision 3/3, recall 3/16 on 23 hand-annotated baseline runs) and `requested_user_input` an upper bound (precision 16/20, recall 16/16) (D74).
