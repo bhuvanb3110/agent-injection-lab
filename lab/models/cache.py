@@ -2,7 +2,9 @@
 
 The key is sha256 over canonical JSON of the whole `ModelRequest`: provider, model ID,
 messages, tools, temperature, max_tokens and the repeat index. Canonical means sorted keys and fixed
-separators, so two equal requests built with different dict orders get the same key. The API
+separators, so two equal requests built with different dict orders get the same key. From the
+second identical request within a run, the key also holds its occurrence index (D68), so that
+request is a new sample rather than a replay of the first. The API
 key is not part of `ModelRequest`, so it can't reach the key or the stored rows.
 
 Only successful responses are stored; errors are never cached.
@@ -24,6 +26,9 @@ def canonical_json(request: ModelRequest) -> str:
     if fields["response_format"] is None:
         # Added in milestone 2 (D62). Left out when unset, so every earlier key stays the same.
         del fields["response_format"]
+    if fields["occurrence"] == 0:
+        # Added in milestone 2 (D68). The first occurrence is left out, for the same reason.
+        del fields["occurrence"]
     return json.dumps(
         fields,
         sort_keys=True,

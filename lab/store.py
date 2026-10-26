@@ -59,6 +59,7 @@ class RunRecord(BaseModel):
     marker_in_final_output: bool | None = None
     acted_on: bool | None = None
     reviewer_exposed: bool | None = None  # D63
+    gate_leak: bool | None = None  # D67
     calls: list[CallRecord]
     malformed_tool_calls: int
     messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
@@ -235,6 +236,8 @@ _ADDED_COLUMNS = [
     ("runs", "acted_on", "INTEGER"),  # D51
     ("calls", "agent_id", "TEXT"),  # D51
     ("runs", "reviewer_exposed", "INTEGER"),  # D63
+    ("runs", "gate_leak", "INTEGER"),  # D67
+    ("marker_hits", "gate_leak", "INTEGER"),  # D67
 ]
 
 
@@ -293,6 +296,7 @@ class RunStore:
             "marker_in_final_output": record.marker_in_final_output,
             "acted_on": record.acted_on,
             "reviewer_exposed": record.reviewer_exposed,
+            "gate_leak": record.gate_leak,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -355,10 +359,11 @@ class RunStore:
                 ],
             )
             self._db.executemany(
-                "INSERT INTO marker_hits (run_id, event_seq, marker, marker_kind, field, hop)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO marker_hits (run_id, event_seq, marker, marker_kind, field, hop,"
+                " gate_leak) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (record.run_id, h.event_seq, h.marker, h.marker_kind, h.field, h.hop)
+                    (record.run_id, h.event_seq, h.marker, h.marker_kind, h.field, h.hop,
+                     h.gate_leak)
                     for h in record.marker_hits
                 ],
             )
@@ -369,7 +374,7 @@ class RunStore:
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
-            " marker_in_final_output, acted_on, reviewer_exposed"
+            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak"
             " FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -406,6 +411,7 @@ class RunStore:
             marker_in_final_output=_bool(row[20]),
             acted_on=_bool(row[21]),
             reviewer_exposed=_bool(row[22]),
+            gate_leak=_bool(row[23]),
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),
@@ -428,12 +434,14 @@ class RunStore:
     def marker_hits(self, run_id: str) -> list[MarkerHit]:
         # The same order lab/tracing/markers.py:find_hits returns them in.
         rows = self._db.execute(
-            "SELECT event_seq, marker, marker_kind, field, hop FROM marker_hits"
+            "SELECT event_seq, marker, marker_kind, field, hop, gate_leak FROM marker_hits"
             " WHERE run_id = ? ORDER BY event_seq, field, marker",
             (run_id,),
         )
         return [
-            MarkerHit(event_seq=r[0], marker=r[1], marker_kind=r[2], field=r[3], hop=r[4])
+            # A hit stored before D67 has no gate_leak (NULL): it predates leaks, so False.
+            MarkerHit(event_seq=r[0], marker=r[1], marker_kind=r[2], field=r[3], hop=r[4],
+                      gate_leak=bool(r[5]))
             for r in rows
         ]
 

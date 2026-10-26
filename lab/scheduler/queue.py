@@ -246,6 +246,7 @@ def _marker_fields(ctx: RunContext) -> dict[str, Any]:
         "marker_in_final_output": summary.marker_in_final_output,
         "acted_on": summary.acted_on,
         "reviewer_exposed": summary.reviewer_exposed,
+        "gate_leak": summary.gate_leak,
     }
 
 

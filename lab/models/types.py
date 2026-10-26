@@ -37,6 +37,12 @@ class ModelRequest(BaseModel):
     # Not sent. Separates repeats in the cache so repeat 2 is a fresh sample, not a replay of
     # repeat 1, which would hide run-to-run variance (D13).
     repeat_idx: int = 0
+    # Not sent. How many identical requests this run made before this one (D68). A repeated
+    # request within a run (two workers given the same instruction) is then a new sample, not a
+    # cache replay. 0, the first occurrence, is left out of the cache key, so no earlier key
+    # changes; and since it counts within the run, a child topology that repeats its parent's
+    # requests repeats their indices too, and still shares the parent's cache.
+    occurrence: int = 0
 
 
 class RawToolCall(BaseModel):
@@ -124,6 +130,8 @@ class RunContext:
     # (agent, tool call ID) -> who wrote that tool result, when it wasn't the tools: a gate
     # that blocked the call (lab/defenses/gates.py). LabLLM traces the result with that sender.
     tool_result_senders: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Request key (first occurrence) -> how many times the run has made that request (D68).
+    request_counts: dict[str, int] = field(default_factory=dict)
 
     # The injection task's check on the final state, set by run_case on attack runs (D49). It
     # lives here, not only in CaseResult, so it survives a ModelError, which has no CaseResult.

@@ -16,8 +16,13 @@ import yaml
 
 import lab.runner
 from lab.cli import main
-from lab.models.fake import ScriptedModel
-from lab.models.types import ModelRequest, ModelResponse
+from lab.domains.agentdojo_bridge import load_banking_suite, run_case
+from lab.domains.agentdojo_bridge.scripted import scripted_reviewers
+from lab.models.cache import CachingClient, ResponseCache
+from lab.models.fake import ScriptedModel, Step, answer, call
+from lab.models.llm_element import LabLLM
+from lab.models.types import ModelRequest, ModelResponse, RunContext
+from lab.topologies import presets
 from lab.store import RunRecord, RunStore, prefix_divergence
 from lab.tracing.markers import summarise
 
@@ -92,6 +97,50 @@ def test_the_divergence_is_computed_from_request_keys_only() -> None:
     assert (row.divergence_call_idx, row.n_shared_calls) == (1, 1)
     row = prefix_divergence("c", "p", ["a", "b"], ["a", "b", "c"])  # the child stopped early
     assert (row.divergence_call_idx, row.n_shared_calls) == (2, 2)
+
+
+def test_identical_requests_within_a_run_are_new_samples_and_t3_still_shares_t2s(
+    tmp_path: Path,
+) -> None:
+    """Two identical delegations in one run: the second worker's requests are a new sample (its
+    key holds occurrence 1), so the counter model answers it anew. T3 on the same cache makes
+    the same requests with the same occurrence indices, so every planner and worker call is
+    still a hit on T2's (D68)."""
+    suite = load_banking_suite()
+    user_task = suite.get_user_task_by_id("user_task_1")
+    instruction = "Please make these calls: get_balance({})."
+    scripts: dict[str, list[Step]] = {
+        user_task.PROMPT: [
+            call("delegate_to_payments", {"instruction": instruction}, call_id="d0"),
+            call("delegate_to_payments", {"instruction": instruction}, call_id="d1"),
+            answer("Your balance is shown above."),
+        ],
+        instruction: [call("get_balance", {}, call_id="b"), answer("Done.")],
+    }
+    cache = ResponseCache(tmp_path / "cache.sqlite")
+    counter = itertools.count()
+
+    def run_on(topology: str) -> RunContext:
+        model = Counting(ScriptedModel(scripts, by_system=scripted_reviewers("ground-truth")),
+                         counter)
+        ctx = RunContext()
+        llm = LabLLM(CachingClient(model, cache), provider="fake", model_id="s")
+        run_case(suite, presets.build(topology, llm), user_task, ctx)
+        return ctx
+
+    t2 = run_on("t2")
+    reports = [e.payload["report"] for e in t2.events if e.kind == "result"]
+    assert len(reports) == 2 and reports[0] != reports[1]  # e.g. "Done. #2" and "Done. #5"
+    workers = [c for c in t2.calls if c.agent_id and c.agent_id.startswith("payments#")]
+    assert not any(c.cached for c in t2.calls)
+    assert len({c.request_key for c in workers}) == len(workers)  # occurrence 1 differs
+
+    t3 = run_on("t3")
+    agents = [c for c in t3.calls if not (c.agent_id or "").startswith("reviewer#")]
+    assert [c.request_key for c in agents] == [c.request_key for c in t2.calls]
+    assert all(c.cached for c in agents)
+    assert [e.payload["report"] for e in t3.events if e.kind == "result"] == reports
+    cache.close()
 
 
 @pytest.mark.usefixtures("counting")

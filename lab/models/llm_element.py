@@ -166,7 +166,9 @@ class LabLLM(BasePipelineElement):
     def _request(
         self, messages: Sequence[ChatMessage], runtime: FunctionsRuntime, ctx: RunContext
     ) -> ModelRequest:
-        return ModelRequest(
+        """The request for these messages. Its `occurrence` counts the identical requests the
+        run has made before it, so a repeat within the run is a new sample (D68)."""
+        request = ModelRequest(
             provider=self.provider,
             model_id=self.model_id,
             messages=[message_to_openai(m) for m in messages],
@@ -178,6 +180,10 @@ class LabLLM(BasePipelineElement):
             response_format=self.response_format,
             repeat_idx=ctx.repeat_idx,
         )
+        first = request_key(request)
+        occurrence = ctx.request_counts.get(first, 0)
+        ctx.request_counts[first] = occurrence + 1
+        return request.model_copy(update={"occurrence": occurrence}) if occurrence else request
 
     def _call(self, request: ModelRequest, ctx: RunContext) -> ChatAssistantMessage:
         """Send the request and append its CallRecord to the context."""
