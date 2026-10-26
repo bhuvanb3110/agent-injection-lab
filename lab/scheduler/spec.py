@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from lab.models.providers import ReasoningEffort
 
@@ -33,8 +33,22 @@ class RunSpec(BaseModel):
     max_tokens: int | None
     seed: int | None  # base seed + repeat_idx (D27); None: no seed is sent
     repeat_idx: int
+    # Added in milestone 2. Both None means a benign run, and then they are left out of the run
+    # ID, so every milestone-1 run keeps its ID (D48).
+    attack: str | None = None
+    injection_task_id: str | None = None
+
+    @model_validator(mode="after")
+    def _attack_and_injection_task_go_together(self) -> RunSpec:
+        if (self.attack is None) != (self.injection_task_id is None):
+            raise ValueError("attack and injection_task_id must both be set, or both be None")
+        return self
 
     @property
     def run_id(self) -> str:
-        canonical = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        fields = self.model_dump(mode="json")
+        for name in ("attack", "injection_task_id"):
+            if fields[name] is None:
+                del fields[name]
+        canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
