@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from lab import provenance
-from lab.attacks.agentdojo import build_injections
+from lab.attacks.agentdojo import build_injections, markers_for
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
 from lab.domains.agentdojo_bridge.scripted import script_for
@@ -110,6 +110,9 @@ class ExperimentRunner:
         if spec.attack is not None and spec.injection_task_id is not None:
             injection_task = self.suite.get_injection_task_by_id(spec.injection_task_id)
             injections = build_injections(self.suite, spec.attack, task, injection_task)
+        ctx.markers = markers_for(
+            spec.attack, spec.injection_task_id, spec.user_task_id, injections or {}
+        )
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
             inner = FakeModel(script_for(spec.model_id, self.suite, task, injection_task))

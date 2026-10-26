@@ -9,6 +9,8 @@ from agentdojo.types import ChatMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from lab.models.providers import ReasoningEffort
+from lab.tracing.events import SINGLE_AGENT, TraceEvent
+from lab.tracing.markers import Marker
 
 
 class ModelRequest(BaseModel):
@@ -98,6 +100,9 @@ class CallRecord(BaseModel):
     finish_reason: str | None
     malformed_tool_calls: int
     reasoning: str | None = None
+    # The agent that made the call. Not part of the request, so not part of the cache key (D12).
+    # None in calls stored before milestone 2.
+    agent_id: str | None = None
 
 
 @dataclass
@@ -106,14 +111,24 @@ class RunContext:
 
     repeat_idx: int = 0
     calls: list[CallRecord] = field(default_factory=list)
-    # The transcript as of the latest model call, kept up to date by LabLLM. When a run ends in
-    # ModelError the pipeline raises before returning its messages; this is what gets stored
-    # instead (D30).
-    messages: list[ChatMessage] = field(default_factory=list)
+    # Each agent's transcript as of its latest model call, and every message of every agent as
+    # a trace event, kept up to date by LabLLM. When a run ends in ModelError the pipeline
+    # raises before returning its messages; these are what get stored instead (D30).
+    transcripts: dict[str, list[ChatMessage]] = field(default_factory=dict)
+    events: list[TraceEvent] = field(default_factory=list)
+    # The agent whose transcript AgentDojo scores and `runs.messages` stores.
+    scored_agent: str = SINGLE_AGENT
 
     # The injection task's check on the final state, set by run_case on attack runs (D49). It
     # lives here, not only in CaseResult, so it survives a ModelError, which has no CaseResult.
     attack_succeeded: bool | None = None
+    # The strings to look for in the trace, set by whoever builds the run. None: not searched,
+    # and the run's marker columns stay NULL.
+    markers: list[Marker] | None = None
+
+    @property
+    def messages(self) -> list[ChatMessage]:
+        return self.transcripts.get(self.scored_agent, [])
 
     @property
     def malformed_tool_calls(self) -> int:

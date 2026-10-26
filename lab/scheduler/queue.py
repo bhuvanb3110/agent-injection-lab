@@ -25,14 +25,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel
-
 from lab.domains.agentdojo_bridge.run_case import CaseResult, Outcome
 from lab.errors import DailyCapReached, InfraError, ModelError
 from lab.models.types import RunContext
 from lab.scheduler.clock import Clock
 from lab.scheduler.spec import RunSpec
 from lab.store import RunRecord, RunStore
+from lab.tracing.events import json_safe
+from lab.tracing.markers import find_hits, summarise
 
 RunFn = Callable[[RunSpec, RunContext], CaseResult]
 # Called once for every spec the queue handles, with what happened to it: the stored outcome
@@ -163,6 +163,9 @@ class Scheduler:
             "started_at": _iso(started),
             "finished_at": _iso(finished),
             "wall_latency_s": finished - started,
+            # Every agent's trace, model errors included: LabLLM kept it in the context (D30).
+            "events": list(ctx.events),
+            **_marker_fields(ctx),
         }
         if result is not None:
             return RunRecord(
@@ -172,7 +175,7 @@ class Scheduler:
                 utility=result.utility,
                 state_check_passed=result.state_check_passed,
                 error=None,
-                messages=[_json_safe(m) for m in result.messages],
+                messages=[json_safe(m) for m in result.messages],
                 attack_succeeded=result.attack_succeeded,
                 utility_under_attack=_utility_under_attack(
                     result.utility, result.attack_succeeded
@@ -188,7 +191,7 @@ class Scheduler:
             # transcript up to the failing call comes from the context LabLLM kept (D30).
             state_check_passed=None,
             error=str(model_error),
-            messages=[_json_safe(m) for m in ctx.messages],
+            messages=[json_safe(m) for m in ctx.messages],
             # Scored by run_case before it re-raised: the tools had already run (D49).
             attack_succeeded=ctx.attack_succeeded,
             utility_under_attack=_utility_under_attack(False, ctx.attack_succeeded),
@@ -200,16 +203,21 @@ def _utility_under_attack(utility: bool, attack_succeeded: bool | None) -> bool 
     return None if attack_succeeded is None else utility and not attack_succeeded
 
 
+def _marker_fields(ctx: RunContext) -> dict[str, Any]:
+    """Marker hits and the per-run numbers derived from them. Nothing if the run set no
+    markers, so its marker columns stay NULL rather than claiming a clean run (PLAN_M2 §5)."""
+    if ctx.markers is None:
+        return {}
+    hits = find_hits(ctx.events, ctx.markers)
+    summary = summarise(hits)
+    return {
+        "marker_hits": hits,
+        "propagated": summary.propagated,
+        "infection_depth": summary.infection_depth,
+        "marker_in_final_output": summary.marker_in_final_output,
+        "acted_on": summary.acted_on,
+    }
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, UTC).isoformat()
-
-
-def _json_safe(value: Any) -> Any:
-    """AgentDojo messages are TypedDicts holding pydantic FunctionCalls; make them plain JSON."""
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_safe(v) for v in value]
-    return value

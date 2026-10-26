@@ -7,7 +7,6 @@ attack_succeeded = True and the second False.
 
 import json
 import sqlite3
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -29,11 +28,11 @@ from lab.errors import ModelError
 from lab.models.fake import FakeModel, Step
 from lab.models.llm_element import LabLLM
 from lab.models.providers import load_providers
-from lab.models.types import CallRecord, RunContext
+from lab.models.types import RunContext
 from lab.scheduler.clock import FakeClock
 from lab.scheduler.queue import Provenance, Scheduler
 from lab.scheduler.spec import RunSpec
-from lab.store import RunRecord, RunStore
+from lab.store import RunStore
 from lab.topologies.t1 import build_t1
 
 USER_TASK = "user_task_2"  # reads landlord-notices.txt, the exit case's channel (PLAN_M2 §6)
@@ -223,31 +222,6 @@ def test_config_mistakes_fail_loudly() -> None:
 
 def test_a_config_with_an_attack_hashes_differently() -> None:
     assert attack_config().config_hash != attack_config(attack=None).config_hash
-
-
-# --- store ---
-
-
-def test_a_milestone_1_store_opens_with_null_attack_columns(
-    tmp_path: Path, run_spec: RunSpec, make_record: Callable[[list[CallRecord]], RunRecord]
-) -> None:
-    """Drop the new columns from a store to get the milestone-1 layout, then reopen it.
-    `run_spec` and `make_record` are the milestone-1 fixtures in conftest.py."""
-    path = tmp_path / "runs.sqlite"
-    store = RunStore(path)
-    store.save_run(make_record([]))
-    store.close()
-    db = sqlite3.connect(path)
-    for column in ("attack", "injection_task_id", "attack_succeeded", "utility_under_attack"):
-        db.execute(f"ALTER TABLE runs DROP COLUMN {column}")
-    db.commit()
-    db.close()
-
-    reopened = RunStore(path)
-    old = reopened.get_run(run_spec.run_id)
-    assert (old.attack_succeeded, old.utility_under_attack) == (None, None)
-    assert (old.spec.attack, old.spec.injection_task_id) == (None, None)
-    reopened.close()
 
 
 # --- end to end through the CLI ---

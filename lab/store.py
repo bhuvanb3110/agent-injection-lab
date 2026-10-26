@@ -1,10 +1,13 @@
 """SQLite run store: one row per scored run, its model calls, and every provider request.
 
-Three tables (DECISIONS.md D2, D25):
+Tables (DECISIONS.md D2, D25, D51):
 - `runs`: one row per run that has an outcome, with every field in BRIEF §9 plus the versions,
   sampling settings and repeat index. A run that hit an InfraError or a daily cap has no row:
   it was never scored, and stays pending for the next invocation.
-- `calls`: the per-call records of each run (tokens, latency, cost, cache hit, attempts).
+- `calls`: the per-call records of each run (tokens, latency, cost, cache hit, attempts, agent).
+- `trace_events`: every agent's every message, and every handoff, in the order they happened.
+- `marker_hits`: where the attack's markers occur in `trace_events`, with their hop. Derived
+  from `trace_events` (lab/tracing/markers.py) and stored for fast reports.
 - `requests`: every real request sent to a provider, including failed attempts. The rate
   limiter reads it back on start-up so daily usage survives a restart.
 
@@ -25,6 +28,8 @@ from pydantic import BaseModel
 from lab.models.types import CallRecord
 from lab.scheduler.retry import RequestLogEntry
 from lab.scheduler.spec import RunSpec
+from lab.tracing.events import TraceEvent
+from lab.tracing.markers import MarkerHit
 
 
 class RunRecord(BaseModel):
@@ -43,9 +48,17 @@ class RunRecord(BaseModel):
     # Attack runs only (D49); None on benign runs and on every milestone-1 run: not applicable.
     attack_succeeded: bool | None = None  # the injection task's check on the final state
     utility_under_attack: bool | None = None  # solved and not attack_succeeded
+    # Derived from `marker_hits` (lab/tracing/markers.py:summarise). None: the run set no
+    # markers, which is every milestone-1 run.
+    propagated: bool | None = None
+    infection_depth: int | None = None
+    marker_in_final_output: bool | None = None
+    acted_on: bool | None = None
     calls: list[CallRecord]
     malformed_tool_calls: int
-    messages: list[dict[str, Any]]  # full trace, JSON-safe
+    messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
+    events: list[TraceEvent] = []  # every agent's messages and handoffs; empty before M2
+    marker_hits: list[MarkerHit] = []
     started_at: str  # ISO 8601 UTC; also the run's date
     finished_at: str
     wall_latency_s: float
@@ -75,6 +88,11 @@ class RunRecord(BaseModel):
 
 def _total(values: Sequence[int | None]) -> int | None:
     return None if None in values else sum(v for v in values if v is not None)
+
+
+def _bool(value: int | None) -> bool | None:
+    """SQLite stores booleans as 0/1; NULL stays None ("not applicable")."""
+    return None if value is None else bool(value)
 
 
 _SCHEMA = """
@@ -143,6 +161,28 @@ CREATE TABLE IF NOT EXISTS requests (
     error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_by_model ON requests (provider, model_id, ts);
+CREATE TABLE IF NOT EXISTS trace_events (
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    seq INTEGER NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_role TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    from_agent TEXT NOT NULL,
+    to_agent TEXT NOT NULL,
+    call_idx INTEGER,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS marker_hits (
+    run_id TEXT NOT NULL,
+    event_seq INTEGER NOT NULL,
+    marker TEXT NOT NULL,
+    marker_kind TEXT NOT NULL,
+    field TEXT NOT NULL,
+    hop INTEGER,
+    PRIMARY KEY (run_id, event_seq, marker, field),
+    FOREIGN KEY (run_id, event_seq) REFERENCES trace_events(run_id, seq)
+);
 """
 
 # Columns added after the first stores were written, as (table, column, type). A store created
@@ -155,6 +195,11 @@ _ADDED_COLUMNS = [
     ("runs", "injection_task_id", "TEXT"),  # D48
     ("runs", "attack_succeeded", "INTEGER"),  # D49
     ("runs", "utility_under_attack", "INTEGER"),  # D49
+    ("runs", "propagated", "INTEGER"),  # D51
+    ("runs", "infection_depth", "INTEGER"),  # D51
+    ("runs", "marker_in_final_output", "INTEGER"),  # D51
+    ("runs", "acted_on", "INTEGER"),  # D51
+    ("calls", "agent_id", "TEXT"),  # D51
 ]
 
 
@@ -208,6 +253,10 @@ class RunStore:
             "injection_task_id": spec.injection_task_id,
             "attack_succeeded": record.attack_succeeded,
             "utility_under_attack": record.utility_under_attack,
+            "propagated": record.propagated,
+            "infection_depth": record.infection_depth,
+            "marker_in_final_output": record.marker_in_final_output,
+            "acted_on": record.acted_on,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -225,8 +274,12 @@ class RunStore:
         placeholders = ", ".join(f":{name}" for name in row)
         with self._db:
             self._db.execute(f"INSERT INTO runs ({columns}) VALUES ({placeholders})", row)
+            # Columns are named, so the insert doesn't depend on where ALTER TABLE put agent_id.
             self._db.executemany(
-                "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO calls (run_id, idx, record, provider, model_id, cached, attempts,"
+                " input_tokens, output_tokens, reasoning_tokens, latency_s, cost_usd,"
+                " malformed_tool_calls, agent_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         record.run_id,
@@ -242,8 +295,35 @@ class RunStore:
                         call.latency_s,
                         call.cost_usd,
                         call.malformed_tool_calls,
+                        call.agent_id,
                     )
                     for idx, call in enumerate(record.calls)
+                ],
+            )
+            self._db.executemany(
+                "INSERT INTO trace_events (run_id, seq, agent_id, agent_role, kind, from_agent,"
+                " to_agent, call_idx, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        record.run_id,
+                        e.seq,
+                        e.agent_id,
+                        e.agent_role,
+                        e.kind,
+                        e.from_agent,
+                        e.to_agent,
+                        e.call_idx,
+                        json.dumps(e.payload),
+                    )
+                    for e in record.events
+                ],
+            )
+            self._db.executemany(
+                "INSERT INTO marker_hits (run_id, event_seq, marker, marker_kind, field, hop)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (record.run_id, h.event_seq, h.marker, h.marker_kind, h.field, h.hop)
+                    for h in record.marker_hits
                 ],
             )
 
@@ -252,7 +332,8 @@ class RunStore:
             "SELECT spec, config_hash, git_commit, agentdojo_version, seed, outcome,"
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
-            " attack_succeeded, utility_under_attack"
+            " attack_succeeded, utility_under_attack, propagated, infection_depth,"
+            " marker_in_final_output, acted_on"
             " FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
@@ -282,10 +363,42 @@ class RunStore:
             started_at=row[13],
             finished_at=row[14],
             wall_latency_s=row[15],
-            attack_succeeded=None if row[16] is None else bool(row[16]),
-            utility_under_attack=None if row[17] is None else bool(row[17]),
+            attack_succeeded=_bool(row[16]),
+            utility_under_attack=_bool(row[17]),
+            propagated=_bool(row[18]),
+            infection_depth=row[19],
+            marker_in_final_output=_bool(row[20]),
+            acted_on=_bool(row[21]),
             calls=calls,
+            events=self.trace_events(run_id),
+            marker_hits=self.marker_hits(run_id),
         )
+
+    def trace_events(self, run_id: str) -> list[TraceEvent]:
+        rows = self._db.execute(
+            "SELECT seq, agent_id, agent_role, kind, from_agent, to_agent, call_idx, payload"
+            " FROM trace_events WHERE run_id = ? ORDER BY seq",
+            (run_id,),
+        )
+        return [
+            TraceEvent(
+                seq=r[0], agent_id=r[1], agent_role=r[2], kind=r[3], from_agent=r[4],
+                to_agent=r[5], call_idx=r[6], payload=json.loads(r[7]),
+            )
+            for r in rows
+        ]
+
+    def marker_hits(self, run_id: str) -> list[MarkerHit]:
+        # The same order lab/tracing/markers.py:find_hits returns them in.
+        rows = self._db.execute(
+            "SELECT event_seq, marker, marker_kind, field, hop FROM marker_hits"
+            " WHERE run_id = ? ORDER BY event_seq, field, marker",
+            (run_id,),
+        )
+        return [
+            MarkerHit(event_seq=r[0], marker=r[1], marker_kind=r[2], field=r[3], hop=r[4])
+            for r in rows
+        ]
 
     def set_failure_label(self, run_id: str, label: str | None) -> None:
         """The one update the store allows: a failure label is an annotation added after the

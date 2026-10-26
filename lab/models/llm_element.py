@@ -9,9 +9,10 @@ differs on purpose (DECISIONS.md D1, D14, D15):
   `MalformedToolCall`, `LabToolsExecutor` answers it with a tool error the model can recover
   from, and the run's count goes up (D6).
 
-Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17), and a
-response cut off by max_tokens (finish_reason "length") ends the run as ModelError "truncated"
-(D29).
+Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17), keeps the
+agent's transcript there (D30), and adds a trace event for every message the agent was sent or
+wrote (lab/tracing/events.py). A response cut off by max_tokens (finish_reason "length") ends
+the run as ModelError "truncated" (D29).
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from lab.models.cache import request_key
 from lab.models.client import ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
+from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, message_event
 
 
 class MalformedToolCall(FunctionCall):
@@ -71,6 +73,8 @@ class LabLLM(BasePipelineElement):
         max_tokens: int | None = None,
         reasoning_effort: ReasoningEffort | None = None,
         seed: int | None = None,
+        agent_id: str = SINGLE_AGENT,
+        agent_role: str = SINGLE_ROLE,
     ) -> None:
         self.client = client
         self.provider = provider
@@ -79,6 +83,9 @@ class LabLLM(BasePipelineElement):
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.seed = seed
+        # Who this model is in the run: names its transcript, its calls and its trace events.
+        self.agent_id = agent_id
+        self.agent_role = agent_role
         self.name = f"{provider}/{model_id}"
 
     def query(
@@ -107,8 +114,10 @@ class LabLLM(BasePipelineElement):
             seed=self.seed,
             repeat_idx=ctx.repeat_idx,
         )
-        # Keep the transcript in the context, so a run that ends in ModelError still has one.
-        ctx.messages = list(messages)
+        # Keep the transcript and the trace in the context, so a run that ends in ModelError
+        # still has both, up to and including what this call was sent.
+        self._record_new_messages(ctx, messages)
+        ctx.transcripts[self.agent_id] = list(messages)
         response = self.client.complete(request)
         assistant = response_to_assistant_message(response)
         malformed = sum(isinstance(c, MalformedToolCall) for c in assistant["tool_calls"] or [])
@@ -129,19 +138,38 @@ class LabLLM(BasePipelineElement):
                 finish_reason=response.finish_reason,
                 malformed_tool_calls=malformed,
                 reasoning=response.reasoning,
+                agent_id=self.agent_id,
             )
         )
-        ctx.messages = [*messages, assistant]
+        transcript = [*messages, assistant]
+        ctx.transcripts[self.agent_id] = transcript
+        ctx.events.append(
+            message_event(
+                len(ctx.events), self.agent_id, self.agent_role, assistant, len(ctx.calls) - 1
+            )
+        )
         if response.finish_reason == "length":
             # Cut off by max_tokens: the answer or tool call may be incomplete, so the run ends
             # here as a model error rather than acting on half a message (D29). The call above
-            # is already counted and the partial message is in ctx.messages.
+            # is already counted and the partial message is in the transcript and the trace.
             raise ModelError(
                 f"{self.name}: response cut off at max_tokens={self.max_tokens}",
                 provider=self.provider,
                 subtype="truncated",
             )
-        return query, runtime, env, ctx.messages, extra_args
+        return query, runtime, env, transcript, extra_args
+
+    def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
+        """Add a trace event for each message this agent hasn't been sent before: the system
+        prompt and request on the first call, then the tool results since its last reply."""
+        seen = ctx.transcripts.get(self.agent_id, [])
+        if list(messages[: len(seen)]) != seen:
+            # The trace assumes transcripts only grow. A pipeline that rewrites one is a bug.
+            raise ValueError(f"The transcript of agent {self.agent_id!r} was rewritten")
+        for message in messages[len(seen) :]:
+            ctx.events.append(
+                message_event(len(ctx.events), self.agent_id, self.agent_role, message, None)
+            )
 
 
 class LabToolsExecutor(ToolsExecutor):
