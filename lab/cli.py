@@ -17,6 +17,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from lab.budget import budgets, format_budget
 from lab.config import ExperimentConfig, expand, load_experiment
 from lab.defenses.human import DUPLICATES_NOT_CAUGHT, PARSER_V1_LIMIT, PARSER_V1_LIMIT_TASK
 from lab.domains.agentdojo_bridge import DO_NOTHING_PASSES, KNOWN_ISSUES
@@ -85,10 +86,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     trace.add_argument("run_id", help="a run ID, or a unique prefix of one")
     trace.add_argument("--store", type=Path, default=DEFAULT_STORE)
 
+    budget = commands.add_parser(
+        "budget",
+        help="each model's tokens and requests used in the last 24 h and left, and when the next "
+        "50,000 tokens free up; makes no model calls",
+    )
+    budget.add_argument("--model", default=None, help="only this model (provider/model_id, or id)")
+    budget.add_argument("--store", type=Path, default=DEFAULT_STORE)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
             return cmd_run(args.config, args.store, args.cache, args.env_file)
+        if args.command == "budget":
+            return cmd_budget(args.model, args.store)
         if args.command == "trace":
             return cmd_trace(args.run_id, args.store)
         if args.command == "label":
@@ -148,6 +159,24 @@ def cmd_run(config_path: Path, store_path: Path, cache_path: Path, env_file: Pat
 def _case_kind(spec: RunSpec) -> str:
     """For the progress lines: benign, or attack:<injection task> for an attacked run."""
     return "benign" if spec.injection_task_id is None else f"attack:{spec.injection_task_id}"
+
+
+def cmd_budget(model: str | None, store_path: Path) -> int:
+    """Print the daily budgets from the run store. No model is called (`lab budget`)."""
+    providers = load_providers()
+    store = RunStore(store_path)
+    try:
+        now = SystemClock().now()
+        rows = budgets(providers, store, now, model)
+    finally:
+        store.close()
+    if not rows:
+        known = ", ".join(f"{p.name}/{m}" for p in providers.values() for m in p.models)
+        print(f"No model named {model!r}. Known: {known}", file=sys.stderr)
+        return 2
+    for row in rows:
+        print("\n".join(format_budget(row, now)))
+    return 0
 
 
 def cmd_label(labels_path: Path, store_path: Path) -> int:
