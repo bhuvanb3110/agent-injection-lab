@@ -97,6 +97,10 @@ class GroupMetrics:
     model_errors: dict[str, int]  # max_iterations, no_final_answer, and model_error subtypes
     malformed_tool_calls: int  # total over all runs
     runs_with_malformed_tool_calls: int
+    # Calls to tools the agent doesn't have (D76), over the runs that counted them: None if no
+    # run of the group did (all stored before D76).
+    out_of_scope_tool_calls: int | None
+    runs_with_out_of_scope_tool_calls: int
     calls: int
     cached_calls: int
     requests_sent: int  # real provider requests, retries included
@@ -155,6 +159,9 @@ def _group(
     calls = [c for run in runs for c in run.calls]
     uncached_runs = [run for run in runs if run.calls and not any(c.cached for c in run.calls)]
     started = sorted(run.started_at for run in runs)
+    out_of_scope = [
+        run.out_of_scope_tool_calls for run in runs if run.out_of_scope_tool_calls is not None
+    ]
     return GroupMetrics(
         provider=provider,
         model_id=model_id,
@@ -168,6 +175,8 @@ def _group(
         model_errors=dict(sorted(model_errors.items())),
         malformed_tool_calls=sum(run.malformed_tool_calls for run in runs),
         runs_with_malformed_tool_calls=sum(run.malformed_tool_calls > 0 for run in runs),
+        out_of_scope_tool_calls=sum(out_of_scope) if out_of_scope else None,
+        runs_with_out_of_scope_tool_calls=sum(bool(run.out_of_scope_tool_calls) for run in runs),
         calls=len(calls),
         cached_calls=sum(c.cached for c in calls),
         requests_sent=sum(run.requests_sent for run in runs),

@@ -7,7 +7,10 @@ differs on purpose (DECISIONS.md D1, D14, D15):
   rejects with a 400 (https://console.groq.com/docs/openai);
 - tool-call arguments that aren't a JSON object don't crash the run. The call becomes a
   `MalformedToolCall`, `LabToolsExecutor` answers it with a tool error the model can recover
-  from, and the run's count goes up (D6).
+  from, and the run's count goes up (D6);
+- a call to a tool the agent doesn't have (an `OutOfScopeToolCall`, D76) is never run either: the
+  agent gets the tool error "Tool X is not available to you." and the run goes on. An agent's
+  fourth such call in a run ends the run as ModelError "out_of_scope_tool_calls".
 
 Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17), keeps the
 agent's transcript there (D30), and adds a trace event for every message the agent was sent or
@@ -60,6 +63,23 @@ class MalformedToolCall(FunctionCall):
 # FunctionCall.args uses the forward reference "FunctionCallArgTypes", which pydantic resolves
 # in the subclass's module, so make it visible here and finish building the model.
 MalformedToolCall.model_rebuild(_types_namespace={"FunctionCallArgTypes": FunctionCallArgTypes})
+
+
+class OutOfScopeToolCall(FunctionCall):
+    """A call to a tool the agent wasn't offered (D76). It is never executed.
+
+    `out_of_scope` is a field, not only the class, so the trace payload says what the call was:
+    the markers search its arguments as `tool_call_args` whoever the agent sends calls to.
+    """
+
+    out_of_scope: bool = True
+
+
+OutOfScopeToolCall.model_rebuild(_types_namespace={"FunctionCallArgTypes": FunctionCallArgTypes})
+
+# An agent's out-of-scope calls allowed per run; the next one ends the run as a model error
+# (D76), so a model that keeps trying can't use up every round.
+MAX_OUT_OF_SCOPE_CALLS = 3
 
 
 class LabLLM(BasePipelineElement):
@@ -150,6 +170,7 @@ class LabLLM(BasePipelineElement):
         ctx.transcripts[self.agent_id] = transcript
         ctx.events.append(self._event(len(ctx.events), assistant, len(ctx.calls) - 1))
         self._raise_if_truncated(ctx)
+        self._raise_if_out_of_scope_cap(ctx)
         return query, runtime, env, transcript, extra_args
 
     def side_call(
@@ -189,7 +210,9 @@ class LabLLM(BasePipelineElement):
         """Send the request and append its CallRecord to the context."""
         response = self.client.complete(request)
         assistant = response_to_assistant_message(response)
-        malformed = sum(isinstance(c, MalformedToolCall) for c in assistant["tool_calls"] or [])
+        calls = assistant["tool_calls"] or []
+        malformed = sum(isinstance(c, MalformedToolCall) for c in calls)
+        out_of_scope = sum(isinstance(c, OutOfScopeToolCall) for c in calls)
         ctx.calls.append(
             CallRecord(
                 provider=self.provider,
@@ -205,6 +228,7 @@ class LabLLM(BasePipelineElement):
                 cost_usd=response.cost_usd,
                 finish_reason=response.finish_reason,
                 malformed_tool_calls=malformed,
+                out_of_scope_tool_calls=out_of_scope,
                 reasoning=response.reasoning,
                 agent_id=self.agent_id,
             )
@@ -220,6 +244,18 @@ class LabLLM(BasePipelineElement):
                 f"{self.name}: response cut off at max_tokens={self.max_tokens}",
                 provider=self.provider,
                 subtype="truncated",
+            )
+
+    def _raise_if_out_of_scope_cap(self, ctx: RunContext) -> None:
+        made = ctx.out_of_scope_by(self.agent_id)
+        if made > MAX_OUT_OF_SCOPE_CALLS:
+            # Like truncation, the call is counted and in the transcript and the trace first,
+            # so its arguments are still searched for markers.
+            raise ModelError(
+                f"{self.name}: agent {self.agent_id} made {made} calls to tools it doesn't have "
+                f"(the limit is {MAX_OUT_OF_SCOPE_CALLS} per run)",
+                provider=self.provider,
+                subtype="out_of_scope_tool_calls",
             )
 
     def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
@@ -246,7 +282,8 @@ class LabLLM(BasePipelineElement):
 
 
 class LabToolsExecutor(ToolsExecutor):
-    """AgentDojo's ToolsExecutor, except that malformed calls get a tool error, not a run.
+    """AgentDojo's ToolsExecutor, except that malformed and out-of-scope calls get a tool error,
+    not a run.
 
     Valid calls are handed one at a time to the parent class, so they execute exactly as in
     AgentDojo. Results stay in the order the model made the calls. Any topology that uses
@@ -266,13 +303,14 @@ class LabToolsExecutor(ToolsExecutor):
         last = messages[-1] if messages else None
         if last is None or last["role"] != "assistant" or not last["tool_calls"]:
             return super().query(query, runtime, env, messages, extra_args)
-        if not any(isinstance(c, MalformedToolCall) for c in last["tool_calls"]):
+        if not any(not_run_result(c) for c in last["tool_calls"]):
             return super().query(query, runtime, env, messages, extra_args)
 
         results: list[ChatMessage] = []
         for call in last["tool_calls"]:
-            if isinstance(call, MalformedToolCall):
-                results.append(malformed_call_result(call))
+            refused = not_run_result(call)
+            if refused is not None:
+                results.append(refused)
                 continue
             single = ChatAssistantMessage(role="assistant", content=None, tool_calls=[call])
             query, runtime, env, out, extra_args = super().query(
@@ -280,6 +318,22 @@ class LabToolsExecutor(ToolsExecutor):
             )
             results.extend(out[1:])
         return query, runtime, env, [*messages, *results], extra_args
+
+
+def not_run_result(call: FunctionCall) -> ChatToolResultMessage | None:
+    """The tool error for a call that is never run (malformed, D15; out of scope, D76), or None
+    for a call that may run. Every executor that takes a LabLLM's calls asks this first."""
+    if isinstance(call, MalformedToolCall):
+        return malformed_call_result(call)
+    if isinstance(call, OutOfScopeToolCall):
+        return ChatToolResultMessage(
+            role="tool",
+            content=[text_content_block_from_string("")],
+            tool_call_id=call.id,
+            tool_call=call,
+            error=f"Tool {call.function} is not available to you.",
+        )
+    return None
 
 
 def malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
@@ -368,7 +422,12 @@ def response_to_assistant_message(response: ModelResponse) -> ChatAssistantMessa
     tool_calls: list[FunctionCall] = []
     for raw in response.tool_calls:
         args, error = _parse_arguments(raw.arguments)
-        if args is None:
+        if raw.out_of_scope:
+            if args is None:
+                # The client only builds these from a JSON object (client.py:out_of_scope_call).
+                raise ValueError(f"Out-of-scope call {raw.name!r} has arguments that aren't one")
+            tool_calls.append(OutOfScopeToolCall(function=raw.name, args=args, id=raw.id))
+        elif args is None:
             tool_calls.append(
                 MalformedToolCall(
                     function=raw.name,

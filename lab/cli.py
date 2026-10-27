@@ -126,8 +126,8 @@ def cmd_run(config_path: Path, store_path: Path, cache_path: Path, env_file: Pat
                        if (m.provider, m.model_id) == (spec.provider, spec.model_id))
             left = _fmt_tokens(runner.token_budget(ref).remaining)
             print(f"[{done}/{total}] {model_key(spec.provider, spec.model_id)} "
-                  f"{spec.user_task_id} r{spec.repeat_idx}: {event}  "
-                  f"(tokens left today: {left})", flush=True)
+                  f"{spec.user_task_id} {_case_kind(spec)} {spec.topology} r{spec.repeat_idx}: "
+                  f"{event}  (tokens left today: {left})", flush=True)
 
         result = runner.run(progress)
         print(f"Done this invocation: {len(result.completed)} stored, "
@@ -143,6 +143,11 @@ def cmd_run(config_path: Path, store_path: Path, cache_path: Path, env_file: Pat
     finally:
         store.close()
         cache.close()
+
+
+def _case_kind(spec: RunSpec) -> str:
+    """For the progress lines: benign, or attack:<injection task> for an attacked run."""
+    return "benign" if spec.injection_task_id is None else f"attack:{spec.injection_task_id}"
 
 
 def cmd_label(labels_path: Path, store_path: Path) -> int:
@@ -442,6 +447,7 @@ def report_text(
             + (", ".join(f"{k} {v}" for k, v in g.failure_labels.items()) or "no failures"),
             f"  malformed calls  {g.malformed_tool_calls} in {g.runs_with_malformed_tool_calls} "
             f"run(s)",
+            *_out_of_scope_line(g),
             f"  calls            {g.calls} ({g.cached_calls} from cache), "
             f"{g.requests_sent} provider requests",
             f"  tokens           input {_fmt_int(g.input_tokens)}, output "
@@ -510,6 +516,15 @@ def _short(commit: str) -> str:
 
 def _fmt_tokens(value: int | None) -> str:
     return "unlimited" if value is None else f"{value:,}"
+
+
+def _out_of_scope_line(g: GroupMetrics) -> list[str]:
+    """Calls to tools the agent doesn't have (D76). No line for groups stored before D76, which
+    didn't count them, so their reports are unchanged."""
+    if g.out_of_scope_tool_calls is None:
+        return []
+    return [f"  out-of-scope     {g.out_of_scope_tool_calls} call(s) in "
+            f"{g.runs_with_out_of_scope_tool_calls} run(s), never run"]
 
 
 def _fmt_int(value: int | None) -> str:

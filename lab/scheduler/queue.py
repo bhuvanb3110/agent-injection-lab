@@ -182,6 +182,7 @@ class Scheduler:
             "seed": spec.seed,
             "calls": list(ctx.calls),
             "malformed_tool_calls": ctx.malformed_tool_calls,
+            "out_of_scope_tool_calls": ctx.out_of_scope_tool_calls,
             "started_at": _iso(started),
             "finished_at": _iso(finished),
             "wall_latency_s": finished - started,

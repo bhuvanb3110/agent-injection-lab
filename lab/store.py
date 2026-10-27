@@ -66,6 +66,9 @@ class RunRecord(BaseModel):
     gate_leak_acted_on: bool | None = None  # D72
     calls: list[CallRecord]
     malformed_tool_calls: int
+    # Calls to tools the agent doesn't have (D76). None on runs stored before D76: not counted
+    # then, because such a call ended the run as model_error/http_400.
+    out_of_scope_tool_calls: int | None = None
     messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
     events: list[TraceEvent] = []  # every agent's messages and handoffs; empty before M2
     marker_hits: list[MarkerHit] = []
@@ -244,6 +247,7 @@ _ADDED_COLUMNS = [
     ("marker_hits", "gate_leak", "INTEGER"),  # D67
     ("runs", "gate_leak_acted_on", "INTEGER"),  # D72
     ("runs", "ended_asking_user", "INTEGER"),  # D74
+    ("runs", "out_of_scope_tool_calls", "INTEGER"),  # D76
 ]
 
 
@@ -312,6 +316,7 @@ class RunStore:
             "reasoning_tokens": record.reasoning_tokens,
             "cost_usd": record.cost_usd,
             "malformed_tool_calls": record.malformed_tool_calls,
+            "out_of_scope_tool_calls": record.out_of_scope_tool_calls,
             "started_at": record.started_at,
             "finished_at": record.finished_at,
             "wall_latency_s": record.wall_latency_s,
@@ -382,7 +387,7 @@ class RunStore:
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
             " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on,"
-            " ended_asking_user FROM runs WHERE run_id = ?",
+            " ended_asking_user, out_of_scope_tool_calls FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -421,6 +426,7 @@ class RunStore:
             gate_leak=_bool(row[23]),
             gate_leak_acted_on=_bool(row[24]),
             ended_asking_user=_bool(row[25]),
+            out_of_scope_tool_calls=row[26],
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),

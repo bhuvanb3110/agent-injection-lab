@@ -130,6 +130,22 @@ def malformed_call(name: str, raw_arguments: str, *, call_id: str | None = None)
     return calls((name, raw_arguments, call_id))
 
 
+def out_of_scope_call(name: str, args: dict[str, Any], *, call_id: str) -> ModelResponse:
+    """A call to a tool the agent wasn't offered, as the client builds it from Groq's 400
+    `tool_use_failed` (D76): no content, no usage."""
+    return ModelResponse(
+        content=None,
+        tool_calls=[
+            RawToolCall(id=call_id, name=name, arguments=json.dumps(args), out_of_scope=True)
+        ],
+        finish_reason="tool_use_failed",
+        input_tokens=None,
+        output_tokens=None,
+        latency_s=0.0,
+        cost_usd=None,
+    )
+
+
 def calls(*specs: tuple[str, str, str | None]) -> ModelResponse:
     """Several tool calls in one turn, each as (name, raw_arguments, call_id or None)."""
     tool_calls = [

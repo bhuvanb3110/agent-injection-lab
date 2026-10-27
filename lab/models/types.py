@@ -51,6 +51,10 @@ class RawToolCall(BaseModel):
     id: str
     name: str
     arguments: str
+    # A call to a tool the request didn't offer, which the provider refused to return as a tool
+    # call (Groq's 400 `tool_use_failed`) and the client recovered from the error body (D76).
+    # It is never run. False in every response cached before D76.
+    out_of_scope: bool = False
 
 
 class RateLimitHeaders(BaseModel):
@@ -108,6 +112,8 @@ class CallRecord(BaseModel):
     cost_usd: float | None
     finish_reason: str | None
     malformed_tool_calls: int
+    # Calls to a tool the agent doesn't have (D76). 0 in calls stored before D76.
+    out_of_scope_tool_calls: int = 0
     reasoning: str | None = None
     # The agent that made the call. Not part of the request, so not part of the cache key (D12).
     # None in calls stored before milestone 2.
@@ -147,3 +153,11 @@ class RunContext:
     @property
     def malformed_tool_calls(self) -> int:
         return sum(call.malformed_tool_calls for call in self.calls)
+
+    @property
+    def out_of_scope_tool_calls(self) -> int:
+        return sum(call.out_of_scope_tool_calls for call in self.calls)
+
+    def out_of_scope_by(self, agent_id: str) -> int:
+        """Out-of-scope calls made by one agent so far (D76's cap is per agent per run)."""
+        return sum(c.out_of_scope_tool_calls for c in self.calls if c.agent_id == agent_id)

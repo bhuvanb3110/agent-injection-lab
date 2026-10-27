@@ -114,7 +114,8 @@ def _body(e: TraceEvent) -> list[str]:
         out += _text_lines(p["role"], "\n".join(texts)) if texts else []
         for call in p.get("tool_calls") or []:
             args = call.get("raw_arguments") or json.dumps(call.get("args"))
-            out.append(f"call {call['function']}({args})  id {call.get('id')}")
+            scope = "  OUT OF SCOPE, not run" if call.get("out_of_scope") else ""
+            out.append(f"call {call['function']}({args})  id {call.get('id')}{scope}")
         if p.get("error"):
             out += _text_lines("error", p["error"])
         return out or [f"{p['role']}: (no text)"]

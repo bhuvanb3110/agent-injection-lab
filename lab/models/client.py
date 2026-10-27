@@ -7,11 +7,15 @@ One `chat.completions.create` call per `complete()`, nothing hidden:
   (https://console.groq.com/docs/openai).
 - `tool_choice` is never sent: the OpenAI default with tools present is already "auto", and
   Ollama does not support the field (https://docs.ollama.com/api/openai-compatibility).
-- Failures become typed errors from lab/errors.py.
+- Failures become typed errors from lab/errors.py. One 400 is not a failure: Groq's
+  `tool_use_failed` for a call to a tool the request didn't offer is the model's behaviour, and
+  comes back as a response holding that call, marked out of scope (D76).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import time
@@ -102,7 +106,20 @@ class OpenAICompatClient:
                 self._redact(f"{type(e).__name__}: {e}"), provider=self.provider.name
             ) from e
         except openai.APIStatusError as e:
-            raise self._status_error(e) from e
+            attempt = out_of_scope_call(e, request)
+            if attempt is None:
+                raise self._status_error(e) from e
+            # Groq sends no usage with the error, so tokens and cost are unknown, never guessed.
+            return ModelResponse(
+                content=None,
+                tool_calls=[attempt],
+                finish_reason=TOOL_USE_FAILED,
+                input_tokens=None,
+                output_tokens=None,
+                latency_s=time.perf_counter() - start,
+                cost_usd=None,
+                rate_limits=rate_limit_headers(e.response.headers),
+            )
         latency_s = time.perf_counter() - start
 
         if not completion.choices:
@@ -173,6 +190,47 @@ class OpenAICompatClient:
     def _redact(self, text: str) -> str:
         # The SDK holds the key; it is used here only to remove it, never stored or printed.
         return redact(text, secrets=[self._sdk.api_key])
+
+
+TOOL_USE_FAILED = "tool_use_failed"
+
+
+def out_of_scope_call(error: openai.APIStatusError, request: ModelRequest) -> RawToolCall | None:
+    """The call in a Groq 400 `tool_use_failed` body, if it names a tool the request didn't
+    offer (D76); else None, and the error stands as before.
+
+    Groq validates tool calls server-side and rejects the whole response when one names a tool
+    not in `request.tools`; the model's attempt is in `failed_generation`. The SDK puts the
+    body's `error` object in `error.body` (openai/_client.py:_make_status_error). Groq's docs
+    don't describe the field, so only the shape seen in m2_exit is accepted: a JSON object
+    {"name": <string>, "arguments": <object>}. A call to an offered tool is a schema failure,
+    not a scope one, and also stays an error.
+    """
+    body = error.body
+    if error.status_code != 400 or not isinstance(body, dict):
+        return None
+    if body.get("code") != TOOL_USE_FAILED:
+        return None
+    generation = body.get("failed_generation")
+    if not isinstance(generation, str):
+        return None
+    try:
+        value = json.loads(generation)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+        return None
+    name, arguments = value["name"], value["arguments"]
+    if not isinstance(name, str) or not isinstance(arguments, dict):
+        return None
+    if name in {tool["function"]["name"] for tool in request.tools}:
+        return None
+    # Groq gives the attempt no ID. One derived from the request and the attempt is stable, and
+    # unique within a transcript, since each request of an agent holds a longer history.
+    digest = hashlib.sha256((request.model_dump_json() + generation).encode("utf-8")).hexdigest()
+    return RawToolCall(
+        id=f"oos_{digest[:24]}", name=name, arguments=json.dumps(arguments), out_of_scope=True
+    )
 
 
 def _read_api_key(provider: ProviderConfig, environ: Mapping[str, str]) -> str:

@@ -46,7 +46,7 @@ from agentdojo.types import (
 from pydantic import BaseModel, Field, ValidationError
 
 from lab.defenses.gates import Gate, GatedRuntime, HandoffCheck, check_handoff, gates_at
-from lab.models.llm_element import LabLLM, MalformedToolCall, malformed_call_result
+from lab.models.llm_element import LabLLM, not_run_result
 from lab.models.types import RunContext
 from lab.topologies.t1 import MAX_ITERS, build_t1, default_system_message
 from lab.tracing.events import (
@@ -203,8 +203,11 @@ class DelegatingExecutor(BasePipelineElement):
         """(sender, tool result, environment). The sender is None for an error the executor
         itself returns (the tools, as in T1), else the worker that wrote the result, or the
         gate that withheld it."""
-        if isinstance(call, MalformedToolCall):
-            return None, malformed_call_result(call), env  # D6, as LabToolsExecutor does
+        refused = not_run_result(call)
+        if refused is not None:
+            # Malformed (D6) or a Banking tool the planner doesn't have (D76), as
+            # LabToolsExecutor answers them: never run, and no worker is started.
+            return None, refused, env
         worker = self.workers.get(call.function)
         if worker is None:
             return None, _error_result(call, f"Invalid tool {call.function} provided."), env
