@@ -92,13 +92,13 @@ def test_apply_writes_ended_asking_user_only_when_the_entry_has_it(tmp_path: Pat
 
 
 def test_committed_labels_annotate_every_unsolved_baseline_run() -> None:
-    """D74: 6 runs of baseline_banking and 17 of baseline_banking_repeats, 16 asking the user."""
+    """D74: 6 runs of baseline_banking and 18 of baseline_banking_repeats, 17 asking the user (D74, D81)."""
     first = load_labels(LABELS / "baseline_banking.yaml").labels
     repeats = load_labels(LABELS / "baseline_banking_repeats.yaml").labels
     everything = first + repeats
-    assert (len(first), len(repeats)) == (6, 17)
+    assert (len(first), len(repeats)) == (6, 18)
     assert all(e.ended_asking_user is not None for e in everything)
-    assert sum(bool(e.ended_asking_user) for e in everything) == 16
+    assert sum(bool(e.ended_asking_user) for e in everything) == 17
     keys = {(e.model_id, e.user_task_id, e.repeat_idx) for e in everything}
     assert len(keys) == len(everything)  # no run labelled twice
     # D74: the two runs whose final message ignores a write they made.
