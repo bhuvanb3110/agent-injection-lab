@@ -92,7 +92,7 @@ def test_apply_writes_ended_asking_user_only_when_the_entry_has_it(tmp_path: Pat
 
 
 def test_committed_labels_annotate_every_unsolved_baseline_run() -> None:
-    """D74: 6 runs of baseline_banking and 18 of baseline_banking_repeats, 17 asking the user (D74, D81)."""
+    """D74, D81: 6 runs of baseline_banking and 18 of baseline_banking_repeats, 17 asking."""
     first = load_labels(LABELS / "baseline_banking.yaml").labels
     repeats = load_labels(LABELS / "baseline_banking_repeats.yaml").labels
     everything = first + repeats
