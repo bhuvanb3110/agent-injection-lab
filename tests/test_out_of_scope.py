@@ -16,6 +16,7 @@ import yaml
 
 from lab.attacks.agentdojo import ATTACK_NAME, ATTACKER_IBAN, build_injections, markers_for
 from lab.cli import main
+from lab.config import expand, load_experiment
 from lab.domains.agentdojo_bridge import Outcome, load_banking_suite, run_case
 from lab.domains.agentdojo_bridge.run_case import tool_call_trace
 from lab.errors import ModelError
@@ -337,3 +338,21 @@ def test_progress_lines_name_the_topology_and_whether_the_run_is_attacked(
     assert "attack:injection_task_4 t1 r0: solved" in lines[2]
     assert "attack:injection_task_4 t2 r0: solved" in lines[3]
 
+
+# --- m2_exit_v2 (D78) ---------------------------------------------------------------------
+
+
+def test_m2_exit_v2_is_m2_exit_under_another_name() -> None:
+    """Same runs apart from the experiment name, so every unchanged request (seed and repeat
+    included) replays from the cache, and the 41 superseded runs are never resumed by it."""
+    experiments = Path(__file__).parent.parent / "configs" / "experiments"
+    old = load_experiment(experiments / "m2_exit.yaml")
+    new = load_experiment(experiments / "m2_exit_v2.yaml")
+    assert new.model_dump(exclude={"name"}) == old.model_dump(exclude={"name"})
+    providers = load_providers()
+    old_specs, new_specs = expand(old, providers), expand(new, providers)
+    assert len(new_specs) == 72
+    assert [s.model_dump(exclude={"experiment"}) for s in new_specs] == [
+        s.model_dump(exclude={"experiment"}) for s in old_specs
+    ]
+    assert not {s.run_id for s in new_specs} & {s.run_id for s in old_specs}
