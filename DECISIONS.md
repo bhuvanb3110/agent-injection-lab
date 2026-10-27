@@ -81,9 +81,11 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D73 · `ended_with_question` is the last sentence ending in "?"; validation against the baseline labels failed · Amended by D74
 - D74 · `asked` is a range: `ended_with_question` (lower) to `requested_user_input` (upper), validated against the hand annotation `ended_asking_user` · Accepted
 - D75 · Action-grounded reports: an M4 candidate defense, not built · Proposed (M4 candidate)
-- D76 · A call to a tool the agent doesn't have is traced, answered with a tool error and never run; Groq's 400 `tool_use_failed` is parsed into one · Accepted
+- D76 · A call to a tool the agent doesn't have is traced, answered with a tool error and never run; Groq's 400 `tool_use_failed` is parsed into one · Accepted (replay confirmed by D80)
 - D77 · Marker normalisation also drops zero-width format characters · Accepted
 - D78 · m2_exit is superseded by m2_exit_v2; its 41 runs stay in the store · Accepted
+- D79 · Calls with no usage: the report shows what is known, how many calls lack usage, and an estimated range beside the unknown totals · Accepted
+- D80 · Groq accepts an out-of-scope call replayed in the history; probed once per model · Accepted
 
 ## Milestone 1
 
@@ -957,3 +959,21 @@ Plan: `docs/PLAN_M2.md`, approved 2026-10-25.
 - **Cost:** the run IDs change with the experiment name, but the cache key doesn't hold it (D12). Every request that is unchanged replays from the cache, with the same seeds (D27) and repeat indices. That covers the 40 runs that ended without an out-of-scope call. D76 changes no request unless an out-of-scope call happened, and D77 changes only the search. Run 41 replays up to the planner's failed call, which was never cached, so that call is new and sampled afresh.
 - **Tested:** the two configs expand to the same 72 specs apart from `experiment`, and no run ID is shared.
 - **Not run:** m2_exit_v2 waits for Bhuvan.
+
+### D79. Calls with no usage: the report shows what is known, how many calls lack usage, and an estimated range beside the unknown totals (2026-10-27)
+- **Problem:** an out-of-scope attempt (D76) comes back with no usage, so by D25 the run's and the group's token and cost totals read "unknown". The exit check measures cost per topology (D46), and one such call hid every number of its group.
+- **Decision:** the totals stay `null` under D25, and the report prints three lines beside them, only for a group that has such calls (other reports are unchanged):
+  - `known usage`: input + output tokens and cost of the calls that have usage, and how many calls that is;
+  - `no usage`: how many calls have none;
+  - `ESTIMATED range`: from the known tokens up to the known tokens plus the estimate for each call without usage, with the cost at the model's public price from `configs/providers.yaml`. The line says it is the limiter's pre-send estimate and not measured.
+- **Where the estimate comes from:** `lab/scheduler/limits.py:estimate_tokens`, the same function the limiter charges before a send (D22, D42): input = request characters / 5.0, output = the reserve, min(max_tokens, 512) (D28). `LabLLM` stores both on the call's `CallRecord` (`estimated_input_tokens`, `estimated_output_tokens`) only when the response has no usage. They are a pure function of the request, so a cache hit stores the same numbers, and no cache key changes. The records live in the `calls.record` JSON, so there is no schema change.
+- **Why "high end", not a bound:** the output part is a ceiling (max_tokens caps it; the reserve is lower than that), but the input part is a character estimate that can be off either way (D41 found 3x too high with 2.6 characters per token before D42). So the range is labelled an estimate and is never added to the known numbers or stored as a total.
+- **Unavailable cases:** a call without usage stored before D79 has no estimate, and the report says "unavailable: a call has no stored estimate". With no price for the model, the tokens range is shown without a cost.
+- **Not done:** no backfill of stored runs. m2_exit's run 41 was a model error and has no `calls` row for its failed call anyway.
+- **Tested:** `tests/test_out_of_scope.py` (a T2 run with two attempts: estimates stored on exactly the two calls, totals still `None`, range = known + estimates, no cost range without prices) and `tests/test_metrics.py` (no lines at full usage; an old call gives "unavailable").
+
+### D80. Groq accepts an out-of-scope call replayed in the history; probed once per model (2026-10-27)
+- **Question:** D76 replays the attempt as an assistant tool call naming a tool that isn't in `tools`, followed by "Tool X is not available to you." Groq's docs say nothing about whether the history is checked.
+- **Probe (2026-10-27, not stored; no run store, cache or limiter involved):** one real request per model through `OpenAICompatClient`, with the history built by our own code (`OutOfScopeToolCall`, `not_run_result`, `message_to_openai`): system, user, then the assistant call `update_scheduled_transaction` (args `id`, `recipient`) and its tool error. Offered tools: `get_balance`, `get_most_recent_transactions`, `read_file`. Sampling as in providers.yaml.
+- **Result:** both gpt-oss-120b and gpt-oss-20b answered 200 with `finish_reason` "stop" and a text reply saying they can't change the transaction. No 400. The replay form stays as D76 made it, and the attempt stays in the trace and the marker search unchanged.
+- **Limits:** one request per model, a short single-agent history, three tools. It shows Groq does not reject this form; it does not show every history shape is accepted. m2_exit_v2 will show any other case, as a `model_error/http_400` with the error stored.

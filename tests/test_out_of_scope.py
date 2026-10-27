@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from lab.attacks.agentdojo import ATTACK_NAME, ATTACKER_IBAN, build_injections, markers_for
-from lab.cli import main
+from lab.cli import main, report_text
 from lab.config import expand, load_experiment
 from lab.domains.agentdojo_bridge import Outcome, load_banking_suite, run_case
 from lab.domains.agentdojo_bridge.run_case import tool_call_trace
@@ -28,6 +28,7 @@ from lab.models.types import ModelRequest, RunContext
 from lab.scheduler.clock import FakeClock
 from lab.scheduler.queue import Provenance, Scheduler
 from lab.scheduler.spec import RunSpec
+from lab.scoring.metrics import compute_metrics
 from lab.store import RunStore
 from lab.topologies.t1 import build_t1
 from lab.topologies.t2 import PLANNER, build_t2
@@ -292,6 +293,57 @@ def test_the_count_is_stored_reported_and_the_call_rendered(tmp_path: Path) -> N
     assert [c.out_of_scope_tool_calls for c in stored.calls].count(1) == 2
     assert "OUT OF SCOPE, not run" in trace_text(stored, None)
     store.close()
+
+
+def test_calls_without_usage_get_the_limiters_estimate_and_the_report_a_range(
+    tmp_path: Path,
+) -> None:
+    """D79: totals stay unknown; known usage, the count of calls without usage and an estimated
+    range are shown beside them."""
+    store = RunStore(tmp_path / "runs.sqlite")
+    spec = RunSpec(
+        experiment="oos", suite="banking", benchmark_version="v1.2.2", user_task_id=USER_TASK,
+        topology="t2", provider="groq", model_id="openai/gpt-oss-120b", temperature=0.0,
+        reasoning_effort=None, max_tokens=2048, seed=1, repeat_idx=0,
+        attack=ATTACK_NAME, injection_task_id=INJECTION_TASK,
+    )
+    provenance = Provenance(config_hash="cfg", git_commit="deadbeef", agentdojo_version="0.1.35")
+    Scheduler(
+        store, lambda s, ctx: attacked_t2(planner_tries_the_bank_tool(2), ctx)[0], FakeClock(),
+        provenance,
+    ).run([spec])
+    stored = store.get_run(spec.run_id)
+    store.close()
+
+    without = [c for c in stored.calls if c.input_tokens is None]
+    assert len(without) == 2
+    for c in without:
+        assert c.estimated_input_tokens and c.estimated_output_tokens == 512  # the reserve
+    for c in stored.calls:
+        if c.input_tokens is not None:
+            assert c.estimated_input_tokens is None  # measured calls carry no estimate
+
+    prices = {(i.name, m): info.price for i in load_providers().values()
+              for m, info in i.models.items()}
+    [g] = compute_metrics([stored], prices=prices)
+    assert g.input_tokens is None and g.cost_usd is None  # D25: still never guessed
+    assert g.calls_without_usage == 2
+    extra = sum((c.estimated_input_tokens or 0) + (c.estimated_output_tokens or 0)
+                for c in without)
+    assert g.tokens_estimate_high == g.known_tokens + extra
+    assert g.cost_estimate_high_usd is not None
+    assert g.cost_estimate_high_usd > g.known_cost_usd
+
+    text = report_text("oos", [g], stored=1, expected=1)
+    assert "input unknown, output unknown" in text
+    assert f"no usage          2 of {g.calls} calls" in text
+    assert f"ESTIMATED range   {g.known_tokens:,} to {g.tokens_estimate_high:,} tokens" in text
+    assert "not measured" in text
+
+    # Without prices the token range stays and the cost range is left out.
+    [no_price] = compute_metrics([stored])
+    assert no_price.tokens_estimate_high == g.tokens_estimate_high
+    assert no_price.cost_estimate_high_usd is None
 
 
 # --- marker normalisation (D77) -----------------------------------------------------------

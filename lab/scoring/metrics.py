@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from lab.domains.agentdojo_bridge.banking import DO_NOTHING_PASSES
 from lab.domains.agentdojo_bridge.run_case import Outcome
+from lab.models.providers import Price
 from lab.models.types import CallRecord
 from lab.store import RunRecord
 
@@ -113,6 +114,15 @@ class GroupMetrics:
     calls_without_reasoning_tokens: int
     reasoning_tokens_range: tuple[int, int] | None
     cost_usd: float | None  # at public paid prices
+    # Calls the provider sent no usage for (D79). Then the totals above stay None (D25), and
+    # these give what is known and an estimated upper range beside them: known is the calls with
+    # usage; the high end adds the limiter's pre-send estimate for the others. None if an
+    # estimate is missing (calls stored before D79), or, for cost, the model has no price.
+    calls_without_usage: int
+    known_tokens: int  # input + output of the calls with usage
+    known_cost_usd: float  # of the calls with a cost
+    tokens_estimate_high: int | None
+    cost_estimate_high_usd: float | None
     failure_labels: dict[str, int]  # hand labels of runs not solved; "unlabeled" for the rest
     call_latency: Latency  # per model call, cache hits excluded
     task_latency: Latency  # per run: sum of its call latencies, runs with no cache hit only
@@ -133,18 +143,27 @@ class GroupMetrics:
 
 
 def compute_metrics(
-    records: Iterable[RunRecord], do_nothing_passes: frozenset[str] = DO_NOTHING_PASSES
+    records: Iterable[RunRecord],
+    do_nothing_passes: frozenset[str] = DO_NOTHING_PASSES,
+    prices: Mapping[tuple[str, str], Price] | None = None,
 ) -> list[GroupMetrics]:
-    """`do_nothing_passes`: user task IDs whose utility check passes with no action taken."""
+    """`do_nothing_passes`: user task IDs whose utility check passes with no action taken.
+    `prices`: (provider, model ID) -> price, for the estimated cost of calls without usage."""
     groups: dict[tuple[str, str, str], list[RunRecord]] = {}
     for record in records:
         key = (record.spec.provider, record.spec.model_id, record.spec.topology)
         groups.setdefault(key, []).append(record)
-    return [_group(key, runs, do_nothing_passes) for key, runs in sorted(groups.items())]
+    return [
+        _group(key, runs, do_nothing_passes, (prices or {}).get((key[0], key[1])))
+        for key, runs in sorted(groups.items())
+    ]
 
 
 def _group(
-    key: tuple[str, str, str], runs: list[RunRecord], do_nothing_passes: frozenset[str]
+    key: tuple[str, str, str],
+    runs: list[RunRecord],
+    do_nothing_passes: frozenset[str],
+    price: Price | None,
 ) -> GroupMetrics:
     provider, model_id, topology = key
     model_errors: Counter[str] = Counter()
@@ -157,6 +176,8 @@ def _group(
     failure_labels = Counter(run.failure_label or "unlabeled" for run in runs if not run.utility)
     discriminating = [run for run in runs if run.spec.user_task_id not in do_nothing_passes]
     calls = [c for run in runs for c in run.calls]
+    unmeasured = [c for c in calls if _lacks_usage(c)]
+    measured = [c for c in calls if not _lacks_usage(c)]
     uncached_runs = [run for run in runs if run.calls and not any(c.cached for c in run.calls)]
     started = sorted(run.started_at for run in runs)
     out_of_scope = [
@@ -186,6 +207,11 @@ def _group(
         calls_without_reasoning_tokens=sum(c.reasoning_tokens is None for c in calls),
         reasoning_tokens_range=_reasoning_range(calls),
         cost_usd=_total_float(run.cost_usd for run in runs),
+        calls_without_usage=len(unmeasured),
+        known_tokens=sum(_measured_tokens(c) for c in measured),
+        known_cost_usd=sum(c.cost_usd for c in calls if c.cost_usd is not None),
+        tokens_estimate_high=_tokens_high(unmeasured, measured),
+        cost_estimate_high_usd=_cost_high(unmeasured, measured, price),
         failure_labels=dict(sorted(failure_labels.items())),
         call_latency=Latency.of([c.latency_s for c in calls if not c.cached]),
         task_latency=Latency.of([sum(c.latency_s for c in run.calls) for run in uncached_runs]),
@@ -270,6 +296,43 @@ def compute_flips(records: Iterable[RunRecord]) -> list[FlipMetrics]:
 
 def _task_number(task_id: str) -> int:
     return int(task_id.rsplit("_", 1)[1])
+
+
+def _lacks_usage(call: CallRecord) -> bool:
+    return call.input_tokens is None or call.output_tokens is None
+
+
+def _measured_tokens(call: CallRecord) -> int:
+    return (call.input_tokens or 0) + (call.output_tokens or 0)
+
+
+def _estimated(unmeasured: Sequence[CallRecord]) -> list[tuple[int, int]] | None:
+    """(input, output) estimates of the calls without usage; None if there are none to add, or
+    one has no estimate (stored before D79)."""
+    pairs = [(c.estimated_input_tokens, c.estimated_output_tokens) for c in unmeasured]
+    if not pairs or any(i is None or o is None for i, o in pairs):
+        return None
+    return [(i, o) for i, o in pairs if i is not None and o is not None]
+
+
+def _tokens_high(unmeasured: Sequence[CallRecord], measured: Sequence[CallRecord]) -> int | None:
+    """The high end of the token range (D79): the known tokens plus the limiter's pre-send
+    estimate for each call without usage."""
+    pairs = _estimated(unmeasured)
+    if pairs is None:
+        return None
+    return sum(_measured_tokens(c) for c in measured) + sum(i + o for i, o in pairs)
+
+
+def _cost_high(
+    unmeasured: Sequence[CallRecord], measured: Sequence[CallRecord], price: Price | None
+) -> float | None:
+    """The same for cost, at the model's public price; None without a price."""
+    pairs = _estimated(unmeasured)
+    if pairs is None or price is None:
+        return None
+    known = sum(c.cost_usd for c in measured if c.cost_usd is not None)
+    return known + sum(price.cost_usd(i, o) for i, o in pairs)
 
 
 def _reasoning_range(calls: Sequence[CallRecord]) -> tuple[int, int] | None:

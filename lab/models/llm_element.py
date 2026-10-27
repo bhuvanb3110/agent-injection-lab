@@ -47,6 +47,7 @@ from lab.models.cache import request_key
 from lab.models.client import ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
+from lab.scheduler.limits import estimate_tokens
 from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, TOOLS, USER, TraceEvent, message_event
 
 
@@ -213,6 +214,9 @@ class LabLLM(BasePipelineElement):
         calls = assistant["tool_calls"] or []
         malformed = sum(isinstance(c, MalformedToolCall) for c in calls)
         out_of_scope = sum(isinstance(c, OutOfScopeToolCall) for c in calls)
+        estimate = None
+        if response.input_tokens is None or response.output_tokens is None:
+            estimate = estimate_tokens(request)
         ctx.calls.append(
             CallRecord(
                 provider=self.provider,
@@ -229,6 +233,8 @@ class LabLLM(BasePipelineElement):
                 finish_reason=response.finish_reason,
                 malformed_tool_calls=malformed,
                 out_of_scope_tool_calls=out_of_scope,
+                estimated_input_tokens=estimate.input_tokens if estimate else None,
+                estimated_output_tokens=estimate.output_tokens if estimate else None,
                 reasoning=response.reasoning,
                 agent_id=self.agent_id,
             )

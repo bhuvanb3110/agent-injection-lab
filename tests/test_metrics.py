@@ -197,3 +197,18 @@ def test_report_shows_failure_labels_and_known_issues() -> None:
     assert "failure labels   asked_user 1, unlabeled 1" in text
     assert "Known issue, user_task_9: rewards inaction" in text
     assert "Known issue" not in report_text("e", [g], 3, 3, tasks={"user_task_4"})
+
+
+def test_full_usage_has_no_estimate_lines_and_an_old_call_has_no_estimate() -> None:
+    [full] = compute_metrics([run("solved", [call(1.0)])])
+    assert full.calls_without_usage == 0 and full.tokens_estimate_high is None
+    assert "no usage" not in report_text("e", [full], stored=1, expected=1)
+
+    # A call without usage stored before D79 has no estimate: the range is unavailable, and
+    # the report says so rather than guessing.
+    [old] = compute_metrics([run("solved", [call(1.0), call(1.0, tokens=None)])])
+    assert old.calls_without_usage == 1
+    assert (old.known_tokens, old.tokens_estimate_high) == (15, None)
+    assert "unavailable: a call has no stored estimate" in report_text(
+        "e", [old], stored=1, expected=1
+    )

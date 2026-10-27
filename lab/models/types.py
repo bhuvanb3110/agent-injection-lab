@@ -114,6 +114,12 @@ class CallRecord(BaseModel):
     malformed_tool_calls: int
     # Calls to a tool the agent doesn't have (D76). 0 in calls stored before D76.
     out_of_scope_tool_calls: int = 0
+    # The limiter's pre-send estimate (lab/scheduler/limits.py:estimate_tokens), kept only for a
+    # call the provider sent no usage for (D79). An estimate, not a measurement: the input is
+    # characters / CHARS_PER_TOKEN, the output the reserve. None when usage is known, and in
+    # calls stored before D79.
+    estimated_input_tokens: int | None = None
+    estimated_output_tokens: int | None = None
     reasoning: str | None = None
     # The agent that made the call. Not part of the request, so not part of the cache key (D12).
     # None in calls stored before milestone 2.

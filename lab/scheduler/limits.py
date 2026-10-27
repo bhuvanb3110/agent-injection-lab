@@ -54,6 +54,10 @@ class TokenEstimate:
     input_tokens: int
     total_tokens: int  # input plus the output reserve
 
+    @property
+    def output_tokens(self) -> int:
+        return self.total_tokens - self.input_tokens
+
 
 def estimate_tokens(request: ModelRequest) -> TokenEstimate:
     chars = len(json.dumps(request.messages)) + len(json.dumps(request.tools))

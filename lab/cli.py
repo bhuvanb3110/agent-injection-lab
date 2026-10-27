@@ -192,13 +192,18 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
     store = RunStore(store_path)
     try:
         records = [r for experiment in experiments for r in store.runs(experiment)]
+        prices = {
+            (p.name, model_id): info.price
+            for p in load_providers().values()
+            for model_id, info in p.models.items()
+        }
         counts = [_expected_runs(experiment, config_path) for experiment in experiments]
         expected = None if None in counts else sum(c for c in counts if c is not None)
         # Benign utility is computed on benign runs only. An attacked run's utility means
         # something else (solved under attack), and pooling the two would move the baseline.
         benign = [r for r in records if r.spec.attack is None]
         print(report_text(
-            ", ".join(experiments), compute_metrics(benign), len(records), expected,
+            ", ".join(experiments), compute_metrics(benign, prices=prices), len(records), expected,
             flips=compute_flips(benign),
             tasks={r.spec.user_task_id for r in benign},
             notes=known_limit_notes(benign),
@@ -209,7 +214,7 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
             print(oversight_text(
                 compute_oversight(records),
                 volume={(g.provider, g.model_id, g.topology): g
-                        for g in compute_metrics(attacked)},
+                        for g in compute_metrics(attacked, prices=prices)},
                 divergences=check_divergences(store, records),
             ))
         return 0
@@ -324,6 +329,7 @@ def oversight_text(
                 f"  tokens                 input {_fmt_int(v.input_tokens)}, output "
                 f"{_fmt_int(v.output_tokens)} (reasoning {_fmt_reasoning(v)})",
                 f"  est. cost              {_fmt_cost(v.cost_usd)} at public paid prices",
+                *_usage_lines(v, "  "),
                 f"  latency / call         {_fmt_latency(v.call_latency)}",
                 f"  latency / task         {_fmt_latency(v.task_latency)}",
             ]
@@ -453,6 +459,7 @@ def report_text(
             f"  tokens           input {_fmt_int(g.input_tokens)}, output "
             f"{_fmt_int(g.output_tokens)} (reasoning {_fmt_reasoning(g)})",
             f"  est. cost        {_fmt_cost(g.cost_usd)} at public paid prices",
+            *_usage_lines(g, "  "),
             f"  latency / call   {_fmt_latency(g.call_latency)}",
             f"  latency / task   {_fmt_latency(g.task_latency)}",
             f"  versions         agentdojo {', '.join(g.agentdojo_versions)}, benchmark "
@@ -525,6 +532,27 @@ def _out_of_scope_line(g: GroupMetrics) -> list[str]:
         return []
     return [f"  out-of-scope     {g.out_of_scope_tool_calls} call(s) in "
             f"{g.runs_with_out_of_scope_tool_calls} run(s), never run"]
+
+
+def _usage_lines(g: GroupMetrics, pad: str) -> list[str]:
+    """Known tokens and cost, the calls with no usage, and the estimated range (D79). Nothing
+    when every call reported usage, so those reports are unchanged. The totals above stay
+    unknown (D25); these lines sit beside them and never replace them."""
+    if g.calls_without_usage == 0:
+        return []
+    lines = [
+        f"{pad}known usage       {g.known_tokens:,} tokens, ${g.known_cost_usd:.4f} "
+        f"({g.calls - g.calls_without_usage} of {g.calls} calls)",
+        f"{pad}no usage          {g.calls_without_usage} of {g.calls} calls (out-of-scope "
+        "attempts, D76)",
+    ]
+    if g.tokens_estimate_high is None:
+        return lines + [f"{pad}estimated range   unavailable: a call has no stored estimate"]
+    cost = "" if g.cost_estimate_high_usd is None else f", ${g.cost_estimate_high_usd:.4f}"
+    return lines + [
+        f"{pad}ESTIMATED range   {g.known_tokens:,} to {g.tokens_estimate_high:,} tokens"
+        f"{cost}: known plus the limiter's pre-send estimate for those calls, not measured (D79)"
+    ]
 
 
 def _fmt_int(value: int | None) -> str:
