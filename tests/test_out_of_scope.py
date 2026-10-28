@@ -22,7 +22,7 @@ from lab.domains.agentdojo_bridge.run_case import tool_call_trace
 from lab.errors import ModelError
 from lab.models.client import OpenAICompatClient
 from lab.models.fake import FakeModel, Step, answer, call, out_of_scope_call
-from lab.models.llm_element import MAX_OUT_OF_SCOPE_CALLS, LabLLM, OutOfScopeToolCall
+from lab.models.llm_element import MAX_REJECTED_CALLS, LabLLM, OutOfScopeToolCall
 from lab.models.providers import load_providers
 from lab.models.types import ModelRequest, RunContext
 from lab.scheduler.clock import FakeClock
@@ -105,33 +105,6 @@ def test_groqs_tool_use_failed_becomes_an_out_of_scope_call() -> None:
     assert again.complete(request(DELEGATE_TOOLS)).tool_calls[0].id == attempt.id
 
 
-@pytest.mark.parametrize(
-    "generation",
-    [
-        "<function=update_scheduled_transaction>{}</function>",  # not JSON
-        '[{"name": "update_scheduled_transaction", "arguments": {}}]',  # not one object
-        '{"name": "update_scheduled_transaction", "arguments": "{}"}',  # arguments not an object
-        '{"name": "update_scheduled_transaction"}',  # no arguments
-        '{"name": "x", "arguments": {}, "extra": 1}',  # unknown shape
-        None,  # no failed_generation
-    ],
-)
-def test_an_unparseable_failed_generation_stays_a_model_error(generation: Any) -> None:
-    client = make_client(tool_use_failed(generation))
-    with pytest.raises(ModelError) as info:
-        client.complete(request(DELEGATE_TOOLS))
-    assert info.value.subtype == "http_400"
-
-
-def test_a_call_to_an_offered_tool_is_a_schema_failure_and_stays_a_model_error() -> None:
-    offered = [{"type": "function", "function": {
-        "name": "update_scheduled_transaction", "description": "", "parameters": {}}}]
-    client = make_client(tool_use_failed(RUN_41_GENERATION))
-    with pytest.raises(ModelError) as info:
-        client.complete(request(offered))
-    assert info.value.subtype == "http_400"
-
-
 def test_another_400_code_stays_a_model_error() -> None:
     client = make_client(tool_use_failed(RUN_41_GENERATION, code="invalid_value"))
     with pytest.raises(ModelError):
@@ -187,7 +160,7 @@ def test_the_planners_out_of_scope_call_is_traced_answered_and_never_run() -> No
     assert [e.to_agent for e in ctx.events if e.kind == "delegation"] == ["account#1"]
     assert [c.function for c in tool_call_trace(ctx.events)] == ["read_file"]
     assert ctx.out_of_scope_tool_calls == 1
-    assert ctx.out_of_scope_by(PLANNER) == 1
+    assert ctx.rejected_by(PLANNER) == 1
 
 
 def test_the_planners_out_of_scope_call_is_searched_as_tool_call_args() -> None:
@@ -209,15 +182,15 @@ def test_the_planners_out_of_scope_call_is_searched_as_tool_call_args() -> None:
 
 
 def test_the_cap_is_per_agent_and_the_fourth_call_is_a_model_error() -> None:
-    _, ctx = attacked_t2(planner_tries_the_bank_tool(MAX_OUT_OF_SCOPE_CALLS))
-    assert ctx.out_of_scope_tool_calls == MAX_OUT_OF_SCOPE_CALLS  # three are tolerated
+    _, ctx = attacked_t2(planner_tries_the_bank_tool(MAX_REJECTED_CALLS))
+    assert ctx.out_of_scope_tool_calls == MAX_REJECTED_CALLS  # three are tolerated
 
     ctx = RunContext()
     with pytest.raises(ModelError) as info:
-        attacked_t2(planner_tries_the_bank_tool(MAX_OUT_OF_SCOPE_CALLS + 1), ctx)
-    assert info.value.subtype == "out_of_scope_tool_calls"
+        attacked_t2(planner_tries_the_bank_tool(MAX_REJECTED_CALLS + 1), ctx)
+    assert info.value.subtype == "rejected_tool_calls"
     # The fourth attempt is in the transcript and the trace, so its arguments are searched.
-    assert ctx.out_of_scope_by(PLANNER) == MAX_OUT_OF_SCOPE_CALLS + 1
+    assert ctx.rejected_by(PLANNER) == MAX_REJECTED_CALLS + 1
     assert ctx.attack_succeeded is False
     assert ctx.markers is not None
     last = max(e.seq for e in ctx.events)
@@ -229,11 +202,11 @@ def test_each_agent_has_its_own_cap() -> None:
     """Three attempts by the planner and three by a worker: six in the run, no model error."""
     worker_tries = [
         out_of_scope_call("read_file", {"file_path": "x"}, call_id=f"w{i}")
-        for i in range(MAX_OUT_OF_SCOPE_CALLS)
+        for i in range(MAX_REJECTED_CALLS)
     ]
     planner_tries = [
         out_of_scope_call("get_balance", {}, call_id=f"p{i}")
-        for i in range(MAX_OUT_OF_SCOPE_CALLS)
+        for i in range(MAX_REJECTED_CALLS)
     ]
     script = [
         *planner_tries,
@@ -243,9 +216,9 @@ def test_each_agent_has_its_own_cap() -> None:
     ]
     result, ctx = attacked_t2(script)
     assert result.outcome is Outcome.NOT_SOLVED
-    assert ctx.out_of_scope_tool_calls == 2 * MAX_OUT_OF_SCOPE_CALLS
+    assert ctx.out_of_scope_tool_calls == 2 * MAX_REJECTED_CALLS
     errors = [m["error"] for m in ctx.transcripts["payments#1"] if m["role"] == "tool"]
-    assert errors == ["Tool read_file is not available to you."] * MAX_OUT_OF_SCOPE_CALLS
+    assert errors == ["Tool read_file is not available to you."] * MAX_REJECTED_CALLS
 
 
 # --- T1 -----------------------------------------------------------------------------------

@@ -483,6 +483,7 @@ def report_text(
             f"  malformed calls  {g.malformed_tool_calls} in {g.runs_with_malformed_tool_calls} "
             f"run(s)",
             *_out_of_scope_line(g),
+            *_rejected_lines(g),
             f"  calls            {g.calls} ({g.cached_calls} from cache), "
             f"{g.requests_sent} provider requests",
             f"  tokens           input {_fmt_int(g.input_tokens)}, output "
@@ -561,6 +562,20 @@ def _out_of_scope_line(g: GroupMetrics) -> list[str]:
         return []
     return [f"  out-of-scope     {g.out_of_scope_tool_calls} call(s) in "
             f"{g.runs_with_out_of_scope_tool_calls} run(s), never run"]
+
+
+def _rejected_lines(g: GroupMetrics) -> list[str]:
+    """Calls Groq rejected as `tool_use_failed` that were recovered, by kind (D82), beyond
+    out-of-scope (above) and malformed (counted with all malformed calls). Only when some run
+    has them, so earlier reports are unchanged."""
+    out = []
+    if g.invalid_argument_tool_calls:
+        out.append(f"  invalid-args     {g.invalid_argument_tool_calls} call(s) in "
+                   f"{g.runs_with_invalid_argument_tool_calls} run(s), rejected by Groq, never run")
+    if g.unparsed_tool_calls:
+        out.append(f"  unparsed         {g.unparsed_tool_calls} call(s) in "
+                   f"{g.runs_with_unparsed_tool_calls} run(s), rejected by Groq, never run")
+    return out
 
 
 def _usage_lines(g: GroupMetrics, pad: str) -> list[str]:

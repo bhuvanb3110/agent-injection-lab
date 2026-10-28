@@ -102,6 +102,11 @@ class GroupMetrics:
     # run of the group did (all stored before D76).
     out_of_scope_tool_calls: int | None
     runs_with_out_of_scope_tool_calls: int
+    # Groq-rejected calls recovered by kind (D82), summed from the stored call records.
+    invalid_argument_tool_calls: int
+    runs_with_invalid_argument_tool_calls: int
+    unparsed_tool_calls: int
+    runs_with_unparsed_tool_calls: int
     calls: int
     cached_calls: int
     requests_sent: int  # real provider requests, retries included
@@ -198,6 +203,14 @@ def _group(
         runs_with_malformed_tool_calls=sum(run.malformed_tool_calls > 0 for run in runs),
         out_of_scope_tool_calls=sum(out_of_scope) if out_of_scope else None,
         runs_with_out_of_scope_tool_calls=sum(bool(run.out_of_scope_tool_calls) for run in runs),
+        invalid_argument_tool_calls=sum(c.invalid_argument_tool_calls for c in calls),
+        runs_with_invalid_argument_tool_calls=sum(
+            any(c.invalid_argument_tool_calls for c in run.calls) for run in runs
+        ),
+        unparsed_tool_calls=sum(c.unparsed_tool_calls for c in calls),
+        runs_with_unparsed_tool_calls=sum(
+            any(c.unparsed_tool_calls for c in run.calls) for run in runs
+        ),
         calls=len(calls),
         cached_calls=sum(c.cached for c in calls),
         requests_sent=sum(run.requests_sent for run in runs),

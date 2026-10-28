@@ -114,7 +114,13 @@ def _body(e: TraceEvent) -> list[str]:
         out += _text_lines(p["role"], "\n".join(texts)) if texts else []
         for call in p.get("tool_calls") or []:
             args = call.get("raw_arguments") or json.dumps(call.get("args"))
-            scope = "  OUT OF SCOPE, not run" if call.get("out_of_scope") else ""
+            scope = ""
+            if call.get("out_of_scope"):
+                scope = "  OUT OF SCOPE, not run"
+            elif call.get("rejection") == "invalid_arguments":
+                scope = "  INVALID ARGUMENTS (rejected by Groq), not run"
+            elif call.get("rejection") == "unparsed":
+                scope = "  UNPARSED (rejected by Groq), not run"
             out.append(f"call {call['function']}({args})  id {call.get('id')}{scope}")
         if p.get("error"):
             out += _text_lines("error", p["error"])

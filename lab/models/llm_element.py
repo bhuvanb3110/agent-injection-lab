@@ -9,8 +9,11 @@ differs on purpose (DECISIONS.md D1, D14, D15):
   `MalformedToolCall`, `LabToolsExecutor` answers it with a tool error the model can recover
   from, and the run's count goes up (D6);
 - a call to a tool the agent doesn't have (an `OutOfScopeToolCall`, D76) is never run either: the
-  agent gets the tool error "Tool X is not available to you." and the run goes on. An agent's
-  fourth such call in a run ends the run as ModelError "out_of_scope_tool_calls".
+  agent gets the tool error "Tool X is not available to you." and the run goes on;
+- so is any other call Groq rejected as `tool_use_failed` (D82): broken JSON becomes a
+  `MalformedToolCall`, arguments that fail the tool's schema or an unreadable generation a
+  `RejectedToolCall`. An agent's fourth rejected call of any kind in a run ends the run as
+  ModelError "rejected_tool_calls".
 
 Every call appends a `CallRecord` to the `RunContext` in `extra_args["ctx"]` (D17), keeps the
 agent's transcript there (D30), and adds a trace event for every message the agent was sent or
@@ -78,9 +81,26 @@ class OutOfScopeToolCall(FunctionCall):
 
 OutOfScopeToolCall.model_rebuild(_types_namespace={"FunctionCallArgTypes": FunctionCallArgTypes})
 
-# An agent's out-of-scope calls allowed per run; the next one ends the run as a model error
-# (D76), so a model that keeps trying can't use up every round.
-MAX_OUT_OF_SCOPE_CALLS = 3
+class RejectedToolCall(FunctionCall):
+    """A call Groq refused as `tool_use_failed` that is neither out of scope nor broken JSON
+    (D82). It is never executed.
+
+    `rejection` is "invalid_arguments" (the arguments are JSON but fail the tool's schema; `args`
+    holds them) or "unparsed" (the generation could not be read; `raw_arguments` holds all of it
+    and `args` is empty). `detail` is Groq's message. The markers search both fields.
+    """
+
+    rejection: str
+    detail: str
+    raw_arguments: str | None = None
+
+
+RejectedToolCall.model_rebuild(_types_namespace={"FunctionCallArgTypes": FunctionCallArgTypes})
+
+# Calls Groq rejected as `tool_use_failed` that an agent may make per run, of all kinds together;
+# the next one ends the run as a model error (D76, D82), so a model that keeps trying can't use
+# up every round.
+MAX_REJECTED_CALLS = 3
 
 
 class LabLLM(BasePipelineElement):
@@ -171,7 +191,7 @@ class LabLLM(BasePipelineElement):
         ctx.transcripts[self.agent_id] = transcript
         ctx.events.append(self._event(len(ctx.events), assistant, len(ctx.calls) - 1))
         self._raise_if_truncated(ctx)
-        self._raise_if_out_of_scope_cap(ctx)
+        self._raise_if_rejected_cap(ctx)
         return query, runtime, env, transcript, extra_args
 
     def side_call(
@@ -214,6 +234,11 @@ class LabLLM(BasePipelineElement):
         calls = assistant["tool_calls"] or []
         malformed = sum(isinstance(c, MalformedToolCall) for c in calls)
         out_of_scope = sum(isinstance(c, OutOfScopeToolCall) for c in calls)
+        invalid = sum(isinstance(c, RejectedToolCall) and c.rejection == "invalid_arguments"
+                      for c in calls)
+        unparsed = sum(isinstance(c, RejectedToolCall) and c.rejection == "unparsed"
+                       for c in calls)
+        rejected = sum(1 for raw in response.tool_calls if raw.out_of_scope or raw.rejection)
         estimate = None
         if response.input_tokens is None or response.output_tokens is None:
             estimate = estimate_tokens(request)
@@ -233,6 +258,9 @@ class LabLLM(BasePipelineElement):
                 finish_reason=response.finish_reason,
                 malformed_tool_calls=malformed,
                 out_of_scope_tool_calls=out_of_scope,
+                invalid_argument_tool_calls=invalid,
+                unparsed_tool_calls=unparsed,
+                rejected_tool_calls=rejected,
                 estimated_input_tokens=estimate.input_tokens if estimate else None,
                 estimated_output_tokens=estimate.output_tokens if estimate else None,
                 reasoning=response.reasoning,
@@ -252,16 +280,16 @@ class LabLLM(BasePipelineElement):
                 subtype="truncated",
             )
 
-    def _raise_if_out_of_scope_cap(self, ctx: RunContext) -> None:
-        made = ctx.out_of_scope_by(self.agent_id)
-        if made > MAX_OUT_OF_SCOPE_CALLS:
+    def _raise_if_rejected_cap(self, ctx: RunContext) -> None:
+        made = ctx.rejected_by(self.agent_id)
+        if made > MAX_REJECTED_CALLS:
             # Like truncation, the call is counted and in the transcript and the trace first,
             # so its arguments are still searched for markers.
             raise ModelError(
-                f"{self.name}: agent {self.agent_id} made {made} calls to tools it doesn't have "
-                f"(the limit is {MAX_OUT_OF_SCOPE_CALLS} per run)",
+                f"{self.name}: agent {self.agent_id} made {made} tool calls Groq rejected as "
+                f"invalid (the limit is {MAX_REJECTED_CALLS} per run)",
                 provider=self.provider,
-                subtype="out_of_scope_tool_calls",
+                subtype="rejected_tool_calls",
             )
 
     def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
@@ -327,7 +355,8 @@ class LabToolsExecutor(ToolsExecutor):
 
 
 def not_run_result(call: FunctionCall) -> ChatToolResultMessage | None:
-    """The tool error for a call that is never run (malformed, D15; out of scope, D76), or None
+    """The tool error for a call that is never run (malformed, D15; out of scope, D76; rejected
+    by Groq as invalid, D82), or None
     for a call that may run. Every executor that takes a LabLLM's calls asks this first."""
     if isinstance(call, MalformedToolCall):
         return malformed_call_result(call)
@@ -339,7 +368,31 @@ def not_run_result(call: FunctionCall) -> ChatToolResultMessage | None:
             tool_call=call,
             error=f"Tool {call.function} is not available to you.",
         )
+    if isinstance(call, RejectedToolCall):
+        return rejected_call_result(call)
     return None
+
+
+def rejected_call_result(call: RejectedToolCall) -> ChatToolResultMessage:
+    if call.rejection == "invalid_arguments":
+        # AgentDojo answers invalid arguments with "ValidationError: ..."
+        # (functions_runtime.py:FunctionsRuntime.run_function); Groq's message names the problem.
+        error = (
+            f"ValidationError: {call.detail}. The tool was not run. Call `{call.function}` "
+            "again with arguments that match its schema."
+        )
+    else:
+        error = (
+            "Your last tool call was rejected as invalid and was not run. Call one of your "
+            "tools again with valid JSON arguments."
+        )
+    return ChatToolResultMessage(
+        role="tool",
+        content=[text_content_block_from_string("")],
+        tool_call_id=call.id,
+        tool_call=call,
+        error=error,
+    )
 
 
 def malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
@@ -433,6 +486,18 @@ def response_to_assistant_message(response: ModelResponse) -> ChatAssistantMessa
                 # The client only builds these from a JSON object (client.py:out_of_scope_call).
                 raise ValueError(f"Out-of-scope call {raw.name!r} has arguments that aren't one")
             tool_calls.append(OutOfScopeToolCall(function=raw.name, args=args, id=raw.id))
+        elif raw.rejection in ("invalid_arguments", "unparsed"):
+            unparsed = raw.rejection == "unparsed"
+            tool_calls.append(
+                RejectedToolCall(
+                    function=raw.name,
+                    args={} if unparsed or args is None else args,
+                    id=raw.id,
+                    rejection=raw.rejection,
+                    detail=raw.detail or "",
+                    raw_arguments=raw.arguments if unparsed else None,
+                )
+            )
         elif args is None:
             tool_calls.append(
                 MalformedToolCall(

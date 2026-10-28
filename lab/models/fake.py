@@ -146,6 +146,26 @@ def out_of_scope_call(name: str, args: dict[str, Any], *, call_id: str) -> Model
     )
 
 
+def rejected_call(
+    name: str, arguments: str, rejection: str, detail: str, *, call_id: str
+) -> ModelResponse:
+    """A call Groq rejected as `tool_use_failed` (D82) and the client recovered: "malformed"
+    (`arguments` is the raw text), "invalid_arguments" (a JSON object) or "unparsed"."""
+    return ModelResponse(
+        content=None,
+        tool_calls=[
+            RawToolCall(
+                id=call_id, name=name, arguments=arguments, rejection=rejection, detail=detail
+            )
+        ],
+        finish_reason="tool_use_failed",
+        input_tokens=None,
+        output_tokens=None,
+        latency_s=0.0,
+        cost_usd=None,
+    )
+
+
 def calls(*specs: tuple[str, str, str | None]) -> ModelResponse:
     """Several tool calls in one turn, each as (name, raw_arguments, call_id or None)."""
     tool_calls = [

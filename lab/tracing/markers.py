@@ -310,7 +310,12 @@ def _scanned_texts(event: TraceEvent) -> list[tuple[HitField, list[str]]]:
             # instructions are searched as `delegation` events. A call to a tool the agent
             # doesn't have (D76) is searched wherever it was sent: the planner trying a bank
             # tool itself is an attempt to act, though it is never run.
-            if event.to_agent != TOOLS and not call.get("out_of_scope"):
+            # The same goes for a call Groq rejected (D82): invalid arguments, unparsed, or
+            # malformed JSON, which keeps the model's text.
+            never_run = (
+                call.get("out_of_scope") or call.get("rejection") or call.get("raw_arguments")
+            )
+            if event.to_agent != TOOLS and not never_run:
                 continue
             # A malformed call keeps the model's own text; it never ran, but the model wrote it.
             args += _strings(call.get("args")) + _strings(call.get("raw_arguments"))

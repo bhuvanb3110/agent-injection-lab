@@ -55,6 +55,12 @@ class RawToolCall(BaseModel):
     # call (Groq's 400 `tool_use_failed`) and the client recovered from the error body (D76).
     # It is never run. False in every response cached before D76.
     out_of_scope: bool = False
+    # Another call Groq's 400 `tool_use_failed` refused and the client recovered (D82), and why:
+    # "malformed" (arguments not JSON; `arguments` is the model's raw text), "invalid_arguments"
+    # (JSON that fails the tool's schema) or "unparsed" (the generation could not be read at
+    # all). `detail` is Groq's message. Never run. None in every response cached before D82.
+    rejection: str | None = None
+    detail: str | None = None
 
 
 class RateLimitHeaders(BaseModel):
@@ -114,6 +120,12 @@ class CallRecord(BaseModel):
     malformed_tool_calls: int
     # Calls to a tool the agent doesn't have (D76). 0 in calls stored before D76.
     out_of_scope_tool_calls: int = 0
+    # Calls Groq rejected as `tool_use_failed` that the client recovered (D82), by kind. The
+    # malformed ones are also in `malformed_tool_calls`. `rejected_tool_calls` is all four kinds
+    # together (out of scope included): what the per-agent cap counts.
+    invalid_argument_tool_calls: int = 0
+    unparsed_tool_calls: int = 0
+    rejected_tool_calls: int = 0
     # The limiter's pre-send estimate (lab/scheduler/limits.py:estimate_tokens), kept only for a
     # call the provider sent no usage for (D79). An estimate, not a measurement: the input is
     # characters / CHARS_PER_TOKEN, the output the reserve. None when usage is known, and in
@@ -164,6 +176,15 @@ class RunContext:
     def out_of_scope_tool_calls(self) -> int:
         return sum(call.out_of_scope_tool_calls for call in self.calls)
 
-    def out_of_scope_by(self, agent_id: str) -> int:
-        """Out-of-scope calls made by one agent so far (D76's cap is per agent per run)."""
-        return sum(c.out_of_scope_tool_calls for c in self.calls if c.agent_id == agent_id)
+    @property
+    def invalid_argument_tool_calls(self) -> int:
+        return sum(call.invalid_argument_tool_calls for call in self.calls)
+
+    @property
+    def unparsed_tool_calls(self) -> int:
+        return sum(call.unparsed_tool_calls for call in self.calls)
+
+    def rejected_by(self, agent_id: str) -> int:
+        """Calls Groq rejected as `tool_use_failed` made by one agent so far (D76, D82: the cap
+        is shared by all kinds, per agent per run)."""
+        return sum(c.rejected_tool_calls for c in self.calls if c.agent_id == agent_id)

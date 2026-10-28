@@ -161,7 +161,8 @@ def tool_call_trace(
     that were never run (a run stopped at max_iterations). After a ModelError
     (`ran_to_completion=False`), the run's last event, if it is a model's message, is left out:
     the run broke off before its calls could run (D49). A call to a tool the agent doesn't have
-    is left out (D76): it never reached the tools, and AgentDojo could never have run it.
+    is left out (D76), and so is a call Groq rejected as invalid or unparsed (D82): none reached
+    the tools, and AgentDojo could never have run them.
     """
     ordered = sorted(events, key=lambda e: e.seq)
     if not ran_to_completion and ordered and ordered[-1].payload.get("role") == "assistant":
@@ -172,7 +173,7 @@ def tool_call_trace(
         if event.kind == "message" and event.payload["role"] == "assistant"
         and event.to_agent == TOOLS
         for call in event.payload["tool_calls"] or []
-        if not call.get("out_of_scope")
+        if not call.get("out_of_scope") and not call.get("rejection")
     ]
 
 

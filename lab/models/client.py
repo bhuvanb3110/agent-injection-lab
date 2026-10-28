@@ -8,8 +8,8 @@ One `chat.completions.create` call per `complete()`, nothing hidden:
 - `tool_choice` is never sent: the OpenAI default with tools present is already "auto", and
   Ollama does not support the field (https://docs.ollama.com/api/openai-compatibility).
 - Failures become typed errors from lab/errors.py. One 400 is not a failure: Groq's
-  `tool_use_failed` for a call to a tool the request didn't offer is the model's behaviour, and
-  comes back as a response holding that call, marked out of scope (D76).
+  `tool_use_failed` is always the model's mistake in a tool call (an unoffered tool, broken JSON,
+  arguments that fail the schema), and comes back as a response holding that call (D76, D82).
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ class OpenAICompatClient:
                 self._redact(f"{type(e).__name__}: {e}"), provider=self.provider.name
             ) from e
         except openai.APIStatusError as e:
-            attempt = out_of_scope_call(e, request)
+            attempt = recovered_call(e, request)
             if attempt is None:
                 raise self._status_error(e) from e
             # Groq sends no usage with the error, so tokens and cost are unknown, never guessed.
@@ -193,18 +193,27 @@ class OpenAICompatClient:
 
 
 TOOL_USE_FAILED = "tool_use_failed"
+_NAME = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_ARGUMENTS_TO_END = re.compile(r'"arguments"\s*:\s*(.*)\}\s*$', re.DOTALL)
+_JSON_PARSE_FAILURE = "Failed to parse tool call arguments as JSON"
+UNKNOWN_TOOL = "unknown_tool"
 
 
-def out_of_scope_call(error: openai.APIStatusError, request: ModelRequest) -> RawToolCall | None:
-    """The call in a Groq 400 `tool_use_failed` body, if it names a tool the request didn't
-    offer (D76); else None, and the error stands as before.
+def recovered_call(error: openai.APIStatusError, request: ModelRequest) -> RawToolCall | None:
+    """The tool call in a Groq 400 `tool_use_failed` body, whatever was wrong with it (D76,
+    D82); None only if the error is not that, and then it stands as before.
 
-    Groq validates tool calls server-side and rejects the whole response when one names a tool
-    not in `request.tools`; the model's attempt is in `failed_generation`. The SDK puts the
-    body's `error` object in `error.body` (openai/_client.py:_make_status_error). Groq's docs
-    don't describe the field, so only the shape seen in m2_exit is accepted: a JSON object
-    {"name": <string>, "arguments": <object>}. A call to an offered tool is a schema failure,
-    not a scope one, and also stays an error.
+    Groq validates tool calls server-side and rejects the whole response when one is bad; the
+    model's attempt is in `failed_generation`. Every such rejection is the model's mistake, so it
+    is classified from Groq's `message` and `failed_generation`, in this order:
+    - a JSON object {"name", "arguments"} naming a tool not in `request.tools`: out of scope;
+    - the same naming an offered tool: invalid arguments (they fail its schema);
+    - Groq's "Failed to parse tool call arguments as JSON" with a readable name: malformed,
+      with the model's raw argument text;
+    - anything else, or no `failed_generation`: unparsed, keeping the whole text.
+    The SDK puts the body's `error` object in `error.body` (openai/_client.py:
+    _make_status_error). Groq's docs don't describe these fields; the shapes come from the
+    bodies seen in m2_exit and m2_exit_v2 (stored in the `requests` table).
     """
     body = error.body
     if error.status_code != 400 or not isinstance(body, dict):
@@ -212,25 +221,48 @@ def out_of_scope_call(error: openai.APIStatusError, request: ModelRequest) -> Ra
     if body.get("code") != TOOL_USE_FAILED:
         return None
     generation = body.get("failed_generation")
-    if not isinstance(generation, str):
-        return None
-    try:
-        value = json.loads(generation)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
-        return None
-    name, arguments = value["name"], value["arguments"]
-    if not isinstance(name, str) or not isinstance(arguments, dict):
-        return None
-    if name in {tool["function"]["name"] for tool in request.tools}:
-        return None
+    generation = generation if isinstance(generation, str) else ""
+    message = body.get("message")
+    message = message if isinstance(message, str) else ""
     # Groq gives the attempt no ID. One derived from the request and the attempt is stable, and
     # unique within a transcript, since each request of an agent holds a longer history.
     digest = hashlib.sha256((request.model_dump_json() + generation).encode("utf-8")).hexdigest()
-    return RawToolCall(
-        id=f"oos_{digest[:24]}", name=name, arguments=json.dumps(arguments), out_of_scope=True
-    )
+
+    def call(prefix: str, name: str, arguments: str, **fields: Any) -> RawToolCall:
+        return RawToolCall(
+            id=f"{prefix}_{digest[:24]}", name=name, arguments=arguments, **fields
+        )
+
+    try:
+        value = json.loads(generation)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict) and set(value) == {"name", "arguments"}:
+        name, arguments = value["name"], value["arguments"]
+        if isinstance(name, str) and isinstance(arguments, dict):
+            if name not in {tool["function"]["name"] for tool in request.tools}:
+                return call("oos", name, json.dumps(arguments), out_of_scope=True)
+            # Groq's message ends in the problem: "... did not match schema: errors: [...]".
+            problem = message.split("validation failed: ")[-1]
+            return call(
+                "rej", name, json.dumps(arguments),
+                rejection="invalid_arguments", detail=problem,
+            )
+    named = _NAME.search(generation)
+    name = named.group(1) if named else UNKNOWN_TOOL
+    if _JSON_PARSE_FAILURE in message and named:
+        text = _ARGUMENTS_TO_END.search(generation)
+        raw = text.group(1).strip() if text else ""
+        if raw and not _is_json_object(raw):
+            return call("rej", name, raw, rejection="malformed", detail=message)
+    return call("rej", name, generation, rejection="unparsed", detail=message)
+
+
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except json.JSONDecodeError:
+        return False
 
 
 def _read_api_key(provider: ProviderConfig, environ: Mapping[str, str]) -> str:
