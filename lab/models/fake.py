@@ -3,12 +3,15 @@
 It never touches the network. Each `complete()` pops the next scripted step; a step can be a
 response or an exception (to script a 429, for example). Running out of script is an error,
 so a test can't pass by accident after the model "stops talking".
+
+`ScriptedModel` plays the same steps keyed by the request instead, for runs that go through the
+response cache (the runner's scripted models).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from typing import Any
 
@@ -55,6 +58,63 @@ class FakeModel:
         return len(self._script)
 
 
+class ScriptedModel:
+    """A ChatClient whose response depends only on the request, so a cache hit can't put it out
+    of step (D54).
+
+    `scripts` maps each agent's first user message (the user's request, or a worker's
+    instruction) to that agent's steps. A request gets step i of its agent's script, where i is
+    the number of assistant messages it already holds. FakeModel, by contrast, pops steps in
+    call order: when the response cache answers a request instead, the step it would have used
+    is left for the next request, and the script falls one step behind.
+
+    `by_system` maps a system prompt to the steps of every agent sent it, for agents whose
+    request isn't known in advance (a T3 reviewer is asked about a report or a call). It is
+    looked at first.
+
+    `side` answers one-off calls made on an agent's behalf (T5-summary's description of a
+    pending call), which share the agent's history and so can't be told apart by it. It gets
+    every request first and returns None for those it doesn't answer.
+    """
+
+    def __init__(
+        self,
+        scripts: Mapping[str, Sequence[Step]],
+        by_system: Mapping[str, Sequence[Step]] | None = None,
+        side: Callable[[ModelRequest], Step | None] | None = None,
+    ) -> None:
+        self.scripts = {key: list(steps) for key, steps in scripts.items()}
+        self.by_system = {key: list(steps) for key, steps in (by_system or {}).items()}
+        self.side = side
+        self.requests: list[ModelRequest] = []
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        self.requests.append(request)
+        special = self.side(request) if self.side is not None else None
+        if special is not None:
+            if isinstance(special, Exception):
+                raise special
+            return special
+        system: str | None = next(
+            (m["content"] for m in request.messages if m["role"] == "system"), None
+        )
+        first_user: str | None = next(
+            (m["content"] for m in request.messages if m["role"] == "user"), None
+        )
+        steps = self.by_system.get(system) if system is not None else None
+        if steps is None and first_user is not None:
+            steps = self.scripts.get(first_user)
+        if steps is None:
+            raise AssertionError(f"No script for an agent asked {first_user!r}")
+        i = sum(1 for m in request.messages if m["role"] == "assistant")
+        if i >= len(steps):
+            raise AssertionError(f"Script exhausted after {len(steps)} steps for {first_user!r}")
+        step = steps[i]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
 def answer(text: str | None) -> ModelResponse:
     """A final answer. `None` scripts an assistant turn with no content."""
     return _response(content=text, tool_calls=[], finish_reason="stop")
@@ -68,6 +128,42 @@ def call(name: str, args: dict[str, Any], *, call_id: str | None = None) -> Mode
 def malformed_call(name: str, raw_arguments: str, *, call_id: str | None = None) -> ModelResponse:
     """One tool call whose arguments are given as raw (possibly invalid) JSON text."""
     return calls((name, raw_arguments, call_id))
+
+
+def out_of_scope_call(name: str, args: dict[str, Any], *, call_id: str) -> ModelResponse:
+    """A call to a tool the agent wasn't offered, as the client builds it from Groq's 400
+    `tool_use_failed` (D76): no content, no usage."""
+    return ModelResponse(
+        content=None,
+        tool_calls=[
+            RawToolCall(id=call_id, name=name, arguments=json.dumps(args), out_of_scope=True)
+        ],
+        finish_reason="tool_use_failed",
+        input_tokens=None,
+        output_tokens=None,
+        latency_s=0.0,
+        cost_usd=None,
+    )
+
+
+def rejected_call(
+    name: str, arguments: str, rejection: str, detail: str, *, call_id: str
+) -> ModelResponse:
+    """A call Groq rejected as `tool_use_failed` (D82) and the client recovered: "malformed"
+    (`arguments` is the raw text), "invalid_arguments" (a JSON object) or "unparsed"."""
+    return ModelResponse(
+        content=None,
+        tool_calls=[
+            RawToolCall(
+                id=call_id, name=name, arguments=arguments, rejection=rejection, detail=detail
+            )
+        ],
+        finish_reason="tool_use_failed",
+        input_tokens=None,
+        output_tokens=None,
+        latency_s=0.0,
+        cost_usd=None,
+    )
 
 
 def calls(*specs: tuple[str, str, str | None]) -> ModelResponse:

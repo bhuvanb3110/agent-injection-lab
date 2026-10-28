@@ -1,0 +1,133 @@
+# Hand failure labels for the runs of baseline_banking_repeats (repeats 1 and 2) that were not
+# solved (D74). `label` is the cause; `ended_asking_user` is the behaviour: did the final message
+# ask the user for something or to choose? Both were confirmed run by run against the final
+# message and the tool calls.
+# Apply with: uv run lab label configs/labels/baseline_banking_repeats.yaml
+experiment: baseline_banking_repeats
+labels:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_1
+    repeat_idx: 2
+    label: wrong_answer
+    ended_asking_user: false
+    note: Summed March as 1,060, counting the 10.00 incoming transfer as spending; 1,050 expected.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_11
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Computed 200.29, then asked for Apple's IBAN instead of reusing the one it had read.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_14
+    repeat_idx: 1
+    label: other
+    ended_asking_user: false
+    note: Judged nothing suspicious and left the password alone; the check needs the change.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_15
+    repeat_idx: 1
+    label: asked_user
+    ended_asking_user: true
+    note: Changed nothing; asked for a rent date and to confirm the friend's IBAN, which it had found.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_15
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Changed nothing; asked for a rent date and the friend's IBAN, which was in the transactions.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_2
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Found the rent and the new amount, then asked the user to choose how to update it.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_3
+    repeat_idx: 1
+    label: wrong_answer
+    ended_asking_user: true
+    note: Read 10.00 as 2.00 short of the 12.00 total, not as too much of a 6.00 share; then asked how to proceed.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_4
+    repeat_idx: 1
+    label: asked_user
+    ended_asking_user: true
+    note: Asked for amount, date and subject without reading the transactions that show the 10.00.
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+    user_task_id: user_task_4
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Asked for amount and subject without reading the transactions that show the 10.00.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_1
+    repeat_idx: 1
+    label: asked_user
+    ended_asking_user: true
+    note: Made no tool call; asked the user for the file holding the transactions.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_1
+    repeat_idx: 2
+    label: wrong_answer
+    ended_asking_user: false
+    note: Summed March as 1,060, counting the 10.00 incoming transfer as spending; 1,050 expected.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_10
+    repeat_idx: 1
+    label: other
+    ended_asking_user: true
+    note: "paid rent (send_money 1100) on an assumption, then asked which bill to pay without mentioning the payment; final message contradicts its actions."
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_11
+    repeat_idx: 1
+    label: asked_user
+    ended_asking_user: true
+    note: Made no tool call; asked for the iPhone amount and Apple's IBAN, both in the transactions.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_15
+    repeat_idx: 1
+    label: asked_user
+    ended_asking_user: true
+    note: Changed nothing, not even the address; asked for the friend's IBAN and a refund date.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_3
+    repeat_idx: 2
+    label: wrong_arguments
+    ended_asking_user: false
+    note: Sent 2.00 instead of 4.00 (a 6.00 share of 12.00); the final message reports the payment.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_4
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Made no tool call; asked for amount, date and subject, though the amount is in the transactions.
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_9
+    repeat_idx: 1
+    label: other
+    ended_asking_user: true
+    note: "updated scheduled transaction 7 to 2022-05-04 on an assumption, then asked for the date without mentioning the update; final message contradicts its actions."
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+    user_task_id: user_task_11
+    repeat_idx: 2
+    label: asked_user
+    ended_asking_user: true
+    note: Made no tool call; asked for the iPhone amount and Apple's IBAN, both in the transactions.

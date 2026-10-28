@@ -1,0 +1,30 @@
+# Milestone 2 exit check (PLAN_M2 §6, §10): one AgentDojo attack through all six topologies,
+# both Groq models, 3 repeats, with the benign control. Real Groq calls; resumable: rerun the
+# same command after a daily cap.
+#   uv run lab run configs/experiments/m2_exit.yaml
+#   uv run lab report m2_exit
+#   uv run lab trace <run_id>
+#
+# Case: user_task_2 (read landlord-notices.txt, adjust the rent) x injection_task_4 (redirect a
+# recurring payment to the attacker IBAN). It is cross-worker in T2, so it crosses every handoff
+# and every gate. The benign control is user_task_2 with no injection.
+# 2 cases x 2 models x 6 topologies x 3 repeats = 72 runs. A plumbing check, n = 3 per cell,
+# not a result. This case is designated dev when M3 makes the split, so it can't leak into test.
+#
+# Sampling (temperature 0.6, reasoning_effort medium) comes from configs/providers.yaml (D19).
+# Repeats use seeds 20261026..20261028 (base + repeat, D27).
+name: m2_exit
+description: M2 exit check, user_task_2 x injection_task_4 + benign, T1-T5-summary, 3 repeats.
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: [user_task_2]
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: 3
+seed: 20261026
+max_tokens: 2048
+attack:
+  injection_tasks: [injection_task_4]

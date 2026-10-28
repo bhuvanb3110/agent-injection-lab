@@ -7,11 +7,15 @@ One `chat.completions.create` call per `complete()`, nothing hidden:
   (https://console.groq.com/docs/openai).
 - `tool_choice` is never sent: the OpenAI default with tools present is already "auto", and
   Ollama does not support the field (https://docs.ollama.com/api/openai-compatibility).
-- Failures become typed errors from lab/errors.py.
+- Failures become typed errors from lab/errors.py. One 400 is not a failure: Groq's
+  `tool_use_failed` is always the model's mistake in a tool call (an unoffered tool, broken JSON,
+  arguments that fail the schema), and comes back as a response holding that call (D76, D82).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import time
@@ -87,6 +91,9 @@ class OpenAICompatClient:
         if request.seed is not None:
             # Groq and Ollama both accept it; Groq calls it "best effort" (D27).
             kwargs["seed"] = request.seed
+        if request.response_format is not None:
+            # Only for models whose providers.yaml entry lists structured outputs (D62).
+            kwargs["response_format"] = request.response_format
 
         start = time.perf_counter()
         try:
@@ -99,7 +106,20 @@ class OpenAICompatClient:
                 self._redact(f"{type(e).__name__}: {e}"), provider=self.provider.name
             ) from e
         except openai.APIStatusError as e:
-            raise self._status_error(e) from e
+            attempt = recovered_call(e, request)
+            if attempt is None:
+                raise self._status_error(e) from e
+            # Groq sends no usage with the error, so tokens and cost are unknown, never guessed.
+            return ModelResponse(
+                content=None,
+                tool_calls=[attempt],
+                finish_reason=TOOL_USE_FAILED,
+                input_tokens=None,
+                output_tokens=None,
+                latency_s=time.perf_counter() - start,
+                cost_usd=None,
+                rate_limits=rate_limit_headers(e.response.headers),
+            )
         latency_s = time.perf_counter() - start
 
         if not completion.choices:
@@ -170,6 +190,79 @@ class OpenAICompatClient:
     def _redact(self, text: str) -> str:
         # The SDK holds the key; it is used here only to remove it, never stored or printed.
         return redact(text, secrets=[self._sdk.api_key])
+
+
+TOOL_USE_FAILED = "tool_use_failed"
+_NAME = re.compile(r'"name"\s*:\s*"([^"]+)"')
+_ARGUMENTS_TO_END = re.compile(r'"arguments"\s*:\s*(.*)\}\s*$', re.DOTALL)
+_JSON_PARSE_FAILURE = "Failed to parse tool call arguments as JSON"
+UNKNOWN_TOOL = "unknown_tool"
+
+
+def recovered_call(error: openai.APIStatusError, request: ModelRequest) -> RawToolCall | None:
+    """The tool call in a Groq 400 `tool_use_failed` body, whatever was wrong with it (D76,
+    D82); None only if the error is not that, and then it stands as before.
+
+    Groq validates tool calls server-side and rejects the whole response when one is bad; the
+    model's attempt is in `failed_generation`. Every such rejection is the model's mistake, so it
+    is classified from Groq's `message` and `failed_generation`, in this order:
+    - a JSON object {"name", "arguments"} naming a tool not in `request.tools`: out of scope;
+    - the same naming an offered tool: invalid arguments (they fail its schema);
+    - Groq's "Failed to parse tool call arguments as JSON" with a readable name: malformed,
+      with the model's raw argument text;
+    - anything else, or no `failed_generation`: unparsed, keeping the whole text.
+    The SDK puts the body's `error` object in `error.body` (openai/_client.py:
+    _make_status_error). Groq's docs don't describe these fields; the shapes come from the
+    bodies seen in m2_exit and m2_exit_v2 (stored in the `requests` table).
+    """
+    body = error.body
+    if error.status_code != 400 or not isinstance(body, dict):
+        return None
+    if body.get("code") != TOOL_USE_FAILED:
+        return None
+    generation = body.get("failed_generation")
+    generation = generation if isinstance(generation, str) else ""
+    message = body.get("message")
+    message = message if isinstance(message, str) else ""
+    # Groq gives the attempt no ID. One derived from the request and the attempt is stable, and
+    # unique within a transcript, since each request of an agent holds a longer history.
+    digest = hashlib.sha256((request.model_dump_json() + generation).encode("utf-8")).hexdigest()
+
+    def call(prefix: str, name: str, arguments: str, **fields: Any) -> RawToolCall:
+        return RawToolCall(
+            id=f"{prefix}_{digest[:24]}", name=name, arguments=arguments, **fields
+        )
+
+    try:
+        value = json.loads(generation)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict) and set(value) == {"name", "arguments"}:
+        name, arguments = value["name"], value["arguments"]
+        if isinstance(name, str) and isinstance(arguments, dict):
+            if name not in {tool["function"]["name"] for tool in request.tools}:
+                return call("oos", name, json.dumps(arguments), out_of_scope=True)
+            # Groq's message ends in the problem: "... did not match schema: errors: [...]".
+            problem = message.split("validation failed: ")[-1]
+            return call(
+                "rej", name, json.dumps(arguments),
+                rejection="invalid_arguments", detail=problem,
+            )
+    named = _NAME.search(generation)
+    name = named.group(1) if named else UNKNOWN_TOOL
+    if _JSON_PARSE_FAILURE in message and named:
+        text = _ARGUMENTS_TO_END.search(generation)
+        raw = text.group(1).strip() if text else ""
+        if raw and not _is_json_object(raw):
+            return call("rej", name, raw, rejection="malformed", detail=message)
+    return call("rej", name, generation, rejection="unparsed", detail=message)
+
+
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except json.JSONDecodeError:
+        return False
 
 
 def _read_api_key(provider: ProviderConfig, environ: Mapping[str, str]) -> str:

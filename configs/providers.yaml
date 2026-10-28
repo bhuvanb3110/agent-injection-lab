@@ -13,6 +13,9 @@
 #
 # `sampling` (optional) is the temperature and reasoning effort every run of that model uses.
 # Each run record stores the values it actually used.
+#
+# `structured_outputs` (optional): the model accepts a json_schema `response_format`. Only the
+# T3 reviewer's calls use it (D62).
 
 providers:
   groq:
@@ -31,6 +34,12 @@ providers:
           output_per_mtok: 0.60
           source: https://console.groq.com/docs/model/openai/gpt-oss-120b
           checked: 2026-10-25
+        structured_outputs: &gpt_oss_structured
+          # Strict json_schema mode (constrained decoding) is listed for both gpt-oss models.
+          # Not with tool use or streaming; the reviewer's calls have neither (D62).
+          strict: true
+          source: https://console.groq.com/docs/structured-outputs
+          checked: 2026-10-26
         sampling: &gpt_oss_sampling
           # Groq's recommendation for reasoning models: temperature 0.5-0.7, default 0.6
           # (https://console.groq.com/docs/reasoning). reasoning_effort is our choice (D19);
@@ -55,6 +64,7 @@ providers:
           output_per_mtok: 0.30
           source: https://console.groq.com/docs/model/openai/gpt-oss-20b
           checked: 2026-10-25
+        structured_outputs: *gpt_oss_structured
         sampling: *gpt_oss_sampling
         limits: *gpt_oss_limits
 

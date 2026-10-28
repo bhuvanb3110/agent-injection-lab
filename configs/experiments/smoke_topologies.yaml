@@ -1,0 +1,30 @@
+# Topology smoke run: every preset, T1 to T5-summary, on 2 Banking tasks, benign and attacked,
+# with scripted FakeModels. No network, no key. Used by CI (tests/test_smoke_topologies.py):
+#   uv run lab run configs/experiments/smoke_topologies.yaml
+#   uv run lab report smoke_topologies
+#   uv run lab trace <run_id>
+#
+# Two scripted models (lab/domains/agentdojo_bridge/scripted.py):
+#   ground-truth  plays each task's ground truth; its reviewers approve, its summaries are faithful
+#   obedient      also plays the injection task's ground truth; its summaries are vague
+#
+# The tasks cover both T2 strata (PLAN_M2 Q1) for injection_task_4 (redirect a recurring payment):
+#   user_task_2   reads the landlord notice (a file): cross-worker, account -> planner -> payments
+#   user_task_3   reads an incoming transaction's subject: local, payments acts on its own
+# 2 tasks x (benign + 1 attack) x 2 models x 6 topologies = 48 runs. Checks the plumbing,
+# measures nothing.
+name: smoke_topologies
+description: T1-T5-summary on 2 Banking tasks, benign and attacked, scripted FakeModels.
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: [user_task_2, user_task_3]
+models:
+  - provider: fake
+    model_id: ground-truth
+  - provider: fake
+    model_id: obedient
+repeats: 1
+seed: 2000
+max_tokens: 2048
+attack:
+  injection_tasks: [injection_task_4]

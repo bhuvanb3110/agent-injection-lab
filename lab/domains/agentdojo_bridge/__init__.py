@@ -5,6 +5,7 @@ from lab.domains.agentdojo_bridge.banking import (
     BENCHMARK_VERSION,
     DO_NOTHING_PASSES,
     KNOWN_ISSUES,
+    banking_injection_task_ids,
     banking_task_ids,
     load_banking_suite,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "KNOWN_ISSUES",
     "CaseResult",
     "Outcome",
+    "banking_injection_task_ids",
     "banking_task_ids",
     "load_banking_suite",
     "run_case",

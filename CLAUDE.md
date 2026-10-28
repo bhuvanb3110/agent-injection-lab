@@ -2,7 +2,7 @@
 
 Research harness measuring whether layers of multi-agent oversight make tool-using agents safer against prompt injection, or just add more places for attacks to enter. The full spec is `docs/BRIEF.md`. Read the sections relevant to the current task before writing code.
 
-**Current milestone: 1 — Setup and baseline** (BRIEF §10). Scope for milestones 1–4: AgentDojo **Banking** suite only.
+**Current milestone: 3** (BRIEF §10; milestone 2, topologies + tracing, is done: plan in `docs/PLAN_M2.md`, decisions D51–D89). Scope for milestones 1–4: AgentDojo **Banking** suite only.
 
 ## How we work
 
@@ -36,9 +36,15 @@ Keep this list current as commands are added.
 - `uv run lab run configs/experiments/smoke.yaml` (FakeModels, no key needed)
 - `uv run lab run configs/experiments/baseline_banking.yaml` (real Groq calls; resumable: rerun the same command after a daily cap)
 - `uv run lab run configs/experiments/baseline_banking_repeats.yaml` (repeats 1–2 of the baseline; real Groq calls; resumable)
+- `uv run lab run configs/experiments/smoke_topologies.yaml` (FakeModels, T1 to T5-summary, benign + attack; also run in CI by `tests/test_smoke_topologies.py`)
+- `uv run lab run configs/experiments/m2_exit_v2.yaml` (M2 exit check: real Groq calls, both models, 3 repeats; resumable; run only when Bhuvan says so. Superseded by `m2_exit_v3.yaml` (D82). Supersedes `m2_exit.yaml`, which stopped at 41/72 before D76, D78)
+- `uv run lab run configs/experiments/m2_exit_v3.yaml` (M2 exit check, third attempt: v2 finished 72/72 but 3 runs ended on Groq `tool_use_failed`, D82. Same cells as v2; real Groq calls; resumable; run only when Bhuvan says so. Supersedes `m2_exit_v2.yaml`; don't pool them)
+- `uv run lab budget [--model <provider/model_id or model_id>]` (per model: tokens and requests used in the last 24 h and left, and when the next 50,000 tokens free up; reads the run store, makes no model calls)
+- `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
 - `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab derive-attacker-effect <experiment>` (fills `attacker_effect` for attack runs stored before final environments were kept, from their executed writes; marked `derived_from_trace`; no model calls; D86)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
-- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` takes `--store`
+- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` and `trace` take `--store`
 
 ## Handoff summary
 

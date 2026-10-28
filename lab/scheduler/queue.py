@@ -15,24 +15,30 @@ What happens to a run, by how it ends:
 Runs execute one at a time. That keeps the limiter and the store simple. While one model is
 throttled the scheduler waits instead of switching to another model's runs, which is slower but
 easy to reason about.
+
+After each stored run, the scheduler records its `prefix_divergence` against its parent preset's
+run (`parents`, from lab/topologies/presets.py), and its children's against it: whichever run of
+a pair is stored second inserts the row (PLAN_M2 §7, D66).
 """
 
 from __future__ import annotations
 
 from collections import Counter, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-
-from pydantic import BaseModel
 
 from lab.domains.agentdojo_bridge.run_case import CaseResult, Outcome
 from lab.errors import DailyCapReached, InfraError, ModelError
 from lab.models.types import RunContext
 from lab.scheduler.clock import Clock
 from lab.scheduler.spec import RunSpec
+from lab.scoring.attacker_effect import FROM_FINAL_ENVIRONMENT
+from lab.scoring.failure_labels import automatic_label
 from lab.store import RunRecord, RunStore
+from lab.tracing.events import json_safe
+from lab.tracing.markers import find_hits, summarise
 
 RunFn = Callable[[RunSpec, RunContext], CaseResult]
 # Called once for every spec the queue handles, with what happened to it: the stored outcome
@@ -73,8 +79,11 @@ class Scheduler:
         provenance: Provenance,
         *,
         max_requeues: int = DEFAULT_MAX_REQUEUES,
+        parents: Mapping[str, str] | None = None,
     ) -> None:
-        """`run_fn` builds the pipeline for a spec and runs it with the given context."""
+        """`run_fn` builds the pipeline for a spec and runs it with the given context.
+        `parents`: topology -> its parent topology, for `prefix_divergence`."""
+        self.parents = dict(parents or {})
         self.store = store
         self.run_fn = run_fn
         self.clock = clock
@@ -136,10 +145,24 @@ class Scheduler:
             else:
                 record = self._record(spec, ctx, started, result=result)
             self.store.save_run(record)
+            self._save_divergences(spec)
             report.completed.append(spec.run_id)
             subtype = f"/{record.outcome_subtype}" if record.outcome_subtype else ""
             tell(spec, record.outcome + subtype)
         return report
+
+    def _save_divergences(self, spec: RunSpec) -> None:
+        """The prefix_divergence rows this run completes: its own against its parent's run,
+        and each child's run against it, for every pair whose two runs are now stored."""
+        pairs = [
+            (spec.model_copy(update={"topology": child}), spec)
+            for child, parent in self.parents.items() if parent == spec.topology
+        ]
+        if spec.topology in self.parents:
+            pairs.append((spec, spec.model_copy(update={"topology": self.parents[spec.topology]})))
+        for child, parent in pairs:
+            if self.store.has_run(child.run_id) and self.store.has_run(parent.run_id):
+                self.store.save_prefix_divergence(child.run_id, parent.run_id)
 
     def _record(
         self,
@@ -160,9 +183,13 @@ class Scheduler:
             "seed": spec.seed,
             "calls": list(ctx.calls),
             "malformed_tool_calls": ctx.malformed_tool_calls,
+            "out_of_scope_tool_calls": ctx.out_of_scope_tool_calls,
             "started_at": _iso(started),
             "finished_at": _iso(finished),
             "wall_latency_s": finished - started,
+            # Every agent's trace, model errors included: LabLLM kept it in the context (D30).
+            "events": list(ctx.events),
+            **_marker_fields(ctx),
         }
         if result is not None:
             return RunRecord(
@@ -172,7 +199,13 @@ class Scheduler:
                 utility=result.utility,
                 state_check_passed=result.state_check_passed,
                 error=None,
-                messages=[_json_safe(m) for m in result.messages],
+                failure_label=_label(result.utility, ctx),
+                messages=[json_safe(m) for m in result.messages],
+                attack_succeeded=result.attack_succeeded,
+                utility_under_attack=_utility_under_attack(
+                    result.utility, result.attack_succeeded
+                ),
+                **_final_state_fields(ctx),
             )
         assert model_error is not None
         return RunRecord(
@@ -184,20 +217,52 @@ class Scheduler:
             # transcript up to the failing call comes from the context LabLLM kept (D30).
             state_check_passed=None,
             error=str(model_error),
-            messages=[_json_safe(m) for m in ctx.messages],
+            failure_label=_label(False, ctx),
+            messages=[json_safe(m) for m in ctx.messages],
+            # Scored by run_case before it re-raised: the tools had already run (D49).
+            attack_succeeded=ctx.attack_succeeded,
+            utility_under_attack=_utility_under_attack(False, ctx.attack_succeeded),
+            **_final_state_fields(ctx),
         )
+
+
+def _utility_under_attack(utility: bool, attack_succeeded: bool | None) -> bool | None:
+    """Solved and not attacked successfully (BRIEF §7). None on a benign run."""
+    return None if attack_succeeded is None else utility and not attack_succeeded
+
+
+def _final_state_fields(ctx: RunContext) -> dict[str, Any]:
+    """The stored final environment and the attack run's `attacker_effect` (D86)."""
+    return {
+        "final_environment": ctx.final_environment,
+        "attacker_effect": ctx.attacker_effect,
+        "attacker_effect_source": None if ctx.attacker_effect is None else FROM_FINAL_ENVIRONMENT,
+    }
+
+
+def _label(utility: bool, ctx: RunContext) -> str | None:
+    label = automatic_label(utility, ctx.events)
+    return None if label is None else label.value
+
+
+def _marker_fields(ctx: RunContext) -> dict[str, Any]:
+    """Marker hits and the per-run numbers derived from them. Nothing if the run set no
+    markers, so its marker columns stay NULL rather than claiming a clean run (PLAN_M2 §5)."""
+    if ctx.markers is None:
+        return {}
+    hits = find_hits(ctx.events, ctx.markers)
+    summary = summarise(hits, ctx.events)
+    return {
+        "marker_hits": hits,
+        "propagated": summary.propagated,
+        "infection_depth": summary.infection_depth,
+        "marker_in_final_output": summary.marker_in_final_output,
+        "acted_on": summary.acted_on,
+        "reviewer_exposed": summary.reviewer_exposed,
+        "gate_leak": summary.gate_leak,
+        "gate_leak_acted_on": summary.gate_leak_acted_on,
+    }
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, UTC).isoformat()
-
-
-def _json_safe(value: Any) -> Any:
-    """AgentDojo messages are TypedDicts holding pydantic FunctionCalls; make them plain JSON."""
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_safe(v) for v in value]
-    return value

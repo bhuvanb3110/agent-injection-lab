@@ -1,10 +1,16 @@
 """SQLite run store: one row per scored run, its model calls, and every provider request.
 
-Three tables (DECISIONS.md D2, D25):
+Tables (DECISIONS.md D2, D25, D51):
 - `runs`: one row per run that has an outcome, with every field in BRIEF §9 plus the versions,
   sampling settings and repeat index. A run that hit an InfraError or a daily cap has no row:
   it was never scored, and stays pending for the next invocation.
-- `calls`: the per-call records of each run (tokens, latency, cost, cache hit, attempts).
+- `calls`: the per-call records of each run (tokens, latency, cost, cache hit, attempts, agent).
+- `trace_events`: every agent's every message, and every handoff, in the order they happened.
+- `marker_hits`: where the attack's markers occur in `trace_events`, with their hop. Derived
+  from `trace_events` (lab/tracing/markers.py) and stored for fast reports.
+- `prefix_divergence`: for a run whose preset has a parent (T3 -> T2, T5 -> T3, ...), the first
+  model call where it stops matching the parent's run of the same case, model and repeat
+  (PLAN_M2 §7, D66). Computed from the two runs' stored request keys only.
 - `requests`: every real request sent to a provider, including failed attempts. The rate
   limiter reads it back on start-up so daily usage survives a restart.
 
@@ -17,6 +23,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +32,8 @@ from pydantic import BaseModel
 from lab.models.types import CallRecord
 from lab.scheduler.retry import RequestLogEntry
 from lab.scheduler.spec import RunSpec
+from lab.tracing.events import TraceEvent
+from lab.tracing.markers import MarkerHit
 
 
 class RunRecord(BaseModel):
@@ -40,9 +49,34 @@ class RunRecord(BaseModel):
     state_check_passed: bool | None  # None when the run never finished (model_error)
     error: str | None
     failure_label: str | None = None  # hand label from configs/labels/ (D43); None: unlabeled
+    # Hand annotation from configs/labels/ (D74): did the final message ask the user for
+    # something or to choose? A behaviour, where `failure_label` is a cause. None: not annotated.
+    ended_asking_user: bool | None = None
+    # Attack runs only (D49); None on benign runs and on every milestone-1 run: not applicable.
+    attack_succeeded: bool | None = None  # the injection task's check on the final state
+    utility_under_attack: bool | None = None  # solved and not attack_succeeded
+    # The lab's own attack measure (D86), attack runs only. `attacker_effect_source` says whether
+    # it was scored on the stored `final_environment` or derived from the trace (older runs).
+    attacker_effect: bool | None = None
+    attacker_effect_source: str | None = None
+    final_environment: str | None = None  # JSON; None on runs stored before D86
+    # Derived from `marker_hits` (lab/tracing/markers.py:summarise). None: the run set no
+    # markers, which is every milestone-1 run.
+    propagated: bool | None = None
+    infection_depth: int | None = None
+    marker_in_final_output: bool | None = None
+    acted_on: bool | None = None
+    reviewer_exposed: bool | None = None  # D63
+    gate_leak: bool | None = None  # D67
+    gate_leak_acted_on: bool | None = None  # D72
     calls: list[CallRecord]
     malformed_tool_calls: int
-    messages: list[dict[str, Any]]  # full trace, JSON-safe
+    # Calls to tools the agent doesn't have (D76). None on runs stored before D76: not counted
+    # then, because such a call ended the run as model_error/http_400.
+    out_of_scope_tool_calls: int | None = None
+    messages: list[dict[str, Any]]  # the scored agent's transcript, JSON-safe
+    events: list[TraceEvent] = []  # every agent's messages and handoffs; empty before M2
+    marker_hits: list[MarkerHit] = []
     started_at: str  # ISO 8601 UTC; also the run's date
     finished_at: str
     wall_latency_s: float
@@ -70,8 +104,36 @@ class RunRecord(BaseModel):
         return sum(c.attempts for c in self.calls)
 
 
+@dataclass(frozen=True)
+class PrefixDivergence:
+    run_id: str
+    parent_run_id: str
+    # The first call index whose request key differs from the parent's call at that index (a
+    # call one run has and the other doesn't counts as different). None: the runs never
+    # diverged, i.e. they made exactly the same calls.
+    divergence_call_idx: int | None
+    n_shared_calls: int  # the calls before the divergence; all of them if there is none
+
+
+def prefix_divergence(
+    run_id: str, parent_run_id: str, keys: Sequence[str], parent_keys: Sequence[str]
+) -> PrefixDivergence:
+    """From the two runs' request keys only, never from cache-hit flags, so it is the same
+    whichever run was made first (PLAN_M2 §7)."""
+    shared = 0
+    while shared < min(len(keys), len(parent_keys)) and keys[shared] == parent_keys[shared]:
+        shared += 1
+    same = shared == len(keys) == len(parent_keys)
+    return PrefixDivergence(run_id, parent_run_id, None if same else shared, shared)
+
+
 def _total(values: Sequence[int | None]) -> int | None:
     return None if None in values else sum(v for v in values if v is not None)
+
+
+def _bool(value: int | None) -> bool | None:
+    """SQLite stores booleans as 0/1; NULL stays None ("not applicable")."""
+    return None if value is None else bool(value)
 
 
 _SCHEMA = """
@@ -140,6 +202,34 @@ CREATE TABLE IF NOT EXISTS requests (
     error_message TEXT
 );
 CREATE INDEX IF NOT EXISTS requests_by_model ON requests (provider, model_id, ts);
+CREATE TABLE IF NOT EXISTS trace_events (
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    seq INTEGER NOT NULL,
+    agent_id TEXT NOT NULL,
+    agent_role TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    from_agent TEXT NOT NULL,
+    to_agent TEXT NOT NULL,
+    call_idx INTEGER,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS marker_hits (
+    run_id TEXT NOT NULL,
+    event_seq INTEGER NOT NULL,
+    marker TEXT NOT NULL,
+    marker_kind TEXT NOT NULL,
+    field TEXT NOT NULL,
+    hop INTEGER,
+    PRIMARY KEY (run_id, event_seq, marker, field),
+    FOREIGN KEY (run_id, event_seq) REFERENCES trace_events(run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS prefix_divergence (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    parent_run_id TEXT NOT NULL REFERENCES runs(run_id),
+    divergence_call_idx INTEGER,
+    n_shared_calls INTEGER NOT NULL
+);
 """
 
 # Columns added after the first stores were written, as (table, column, type). A store created
@@ -148,6 +238,24 @@ _ADDED_COLUMNS = [
     ("requests", "error_type", "TEXT"),  # D42
     ("requests", "http_status", "INTEGER"),  # D42
     ("requests", "error_message", "TEXT"),  # D42
+    ("runs", "attack", "TEXT"),  # D48
+    ("runs", "injection_task_id", "TEXT"),  # D48
+    ("runs", "attack_succeeded", "INTEGER"),  # D49
+    ("runs", "utility_under_attack", "INTEGER"),  # D49
+    ("runs", "propagated", "INTEGER"),  # D51
+    ("runs", "infection_depth", "INTEGER"),  # D51
+    ("runs", "marker_in_final_output", "INTEGER"),  # D51
+    ("runs", "acted_on", "INTEGER"),  # D51
+    ("calls", "agent_id", "TEXT"),  # D51
+    ("runs", "reviewer_exposed", "INTEGER"),  # D63
+    ("runs", "gate_leak", "INTEGER"),  # D67
+    ("marker_hits", "gate_leak", "INTEGER"),  # D67
+    ("runs", "gate_leak_acted_on", "INTEGER"),  # D72
+    ("runs", "ended_asking_user", "INTEGER"),  # D74
+    ("runs", "out_of_scope_tool_calls", "INTEGER"),  # D76
+    ("runs", "attacker_effect", "INTEGER"),  # D86
+    ("runs", "attacker_effect_source", "TEXT"),  # D86
+    ("runs", "final_environment", "TEXT"),  # D86
 ]
 
 
@@ -197,6 +305,20 @@ class RunStore:
             "state_check_passed": record.state_check_passed,
             "error": record.error,
             "failure_label": record.failure_label,
+            "attack": spec.attack,
+            "injection_task_id": spec.injection_task_id,
+            "attack_succeeded": record.attack_succeeded,
+            "utility_under_attack": record.utility_under_attack,
+            "attacker_effect": record.attacker_effect,
+            "attacker_effect_source": record.attacker_effect_source,
+            "final_environment": record.final_environment,
+            "propagated": record.propagated,
+            "infection_depth": record.infection_depth,
+            "marker_in_final_output": record.marker_in_final_output,
+            "acted_on": record.acted_on,
+            "reviewer_exposed": record.reviewer_exposed,
+            "gate_leak": record.gate_leak,
+            "gate_leak_acted_on": record.gate_leak_acted_on,
             "n_calls": len(record.calls),
             "n_cached_calls": sum(c.cached for c in record.calls),
             "requests_sent": record.requests_sent,
@@ -205,6 +327,7 @@ class RunStore:
             "reasoning_tokens": record.reasoning_tokens,
             "cost_usd": record.cost_usd,
             "malformed_tool_calls": record.malformed_tool_calls,
+            "out_of_scope_tool_calls": record.out_of_scope_tool_calls,
             "started_at": record.started_at,
             "finished_at": record.finished_at,
             "wall_latency_s": record.wall_latency_s,
@@ -214,8 +337,12 @@ class RunStore:
         placeholders = ", ".join(f":{name}" for name in row)
         with self._db:
             self._db.execute(f"INSERT INTO runs ({columns}) VALUES ({placeholders})", row)
+            # Columns are named, so the insert doesn't depend on where ALTER TABLE put agent_id.
             self._db.executemany(
-                "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO calls (run_id, idx, record, provider, model_id, cached, attempts,"
+                " input_tokens, output_tokens, reasoning_tokens, latency_s, cost_usd,"
+                " malformed_tool_calls, agent_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         record.run_id,
@@ -231,8 +358,36 @@ class RunStore:
                         call.latency_s,
                         call.cost_usd,
                         call.malformed_tool_calls,
+                        call.agent_id,
                     )
                     for idx, call in enumerate(record.calls)
+                ],
+            )
+            self._db.executemany(
+                "INSERT INTO trace_events (run_id, seq, agent_id, agent_role, kind, from_agent,"
+                " to_agent, call_idx, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        record.run_id,
+                        e.seq,
+                        e.agent_id,
+                        e.agent_role,
+                        e.kind,
+                        e.from_agent,
+                        e.to_agent,
+                        e.call_idx,
+                        json.dumps(e.payload),
+                    )
+                    for e in record.events
+                ],
+            )
+            self._db.executemany(
+                "INSERT INTO marker_hits (run_id, event_seq, marker, marker_kind, field, hop,"
+                " gate_leak) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (record.run_id, h.event_seq, h.marker, h.marker_kind, h.field, h.hop,
+                     h.gate_leak)
+                    for h in record.marker_hits
                 ],
             )
 
@@ -240,8 +395,11 @@ class RunStore:
         row = self._db.execute(
             "SELECT spec, config_hash, git_commit, agentdojo_version, seed, outcome,"
             " outcome_subtype, utility, state_check_passed, error, failure_label,"
-            " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s"
-            " FROM runs WHERE run_id = ?",
+            " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
+            " attack_succeeded, utility_under_attack, propagated, infection_depth,"
+            " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on,"
+            " ended_asking_user, out_of_scope_tool_calls, attacker_effect, attacker_effect_source,"
+            " final_environment FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -270,11 +428,83 @@ class RunStore:
             started_at=row[13],
             finished_at=row[14],
             wall_latency_s=row[15],
+            attack_succeeded=_bool(row[16]),
+            utility_under_attack=_bool(row[17]),
+            propagated=_bool(row[18]),
+            infection_depth=row[19],
+            marker_in_final_output=_bool(row[20]),
+            acted_on=_bool(row[21]),
+            reviewer_exposed=_bool(row[22]),
+            gate_leak=_bool(row[23]),
+            gate_leak_acted_on=_bool(row[24]),
+            ended_asking_user=_bool(row[25]),
+            out_of_scope_tool_calls=row[26],
+            attacker_effect=_bool(row[27]),
+            attacker_effect_source=row[28],
+            final_environment=row[29],
             calls=calls,
+            events=self.trace_events(run_id),
+            marker_hits=self.marker_hits(run_id),
         )
 
+    def trace_events(self, run_id: str) -> list[TraceEvent]:
+        rows = self._db.execute(
+            "SELECT seq, agent_id, agent_role, kind, from_agent, to_agent, call_idx, payload"
+            " FROM trace_events WHERE run_id = ? ORDER BY seq",
+            (run_id,),
+        )
+        return [
+            TraceEvent(
+                seq=r[0], agent_id=r[1], agent_role=r[2], kind=r[3], from_agent=r[4],
+                to_agent=r[5], call_idx=r[6], payload=json.loads(r[7]),
+            )
+            for r in rows
+        ]
+
+    def marker_hits(self, run_id: str) -> list[MarkerHit]:
+        # The same order lab/tracing/markers.py:find_hits returns them in.
+        rows = self._db.execute(
+            "SELECT event_seq, marker, marker_kind, field, hop, gate_leak FROM marker_hits"
+            " WHERE run_id = ? ORDER BY event_seq, field, marker",
+            (run_id,),
+        )
+        return [
+            # A hit stored before D67 has no gate_leak (NULL): it predates leaks, so False.
+            MarkerHit(event_seq=r[0], marker=r[1], marker_kind=r[2], field=r[3], hop=r[4],
+                      gate_leak=bool(r[5]))
+            for r in rows
+        ]
+
+    def request_keys(self, run_id: str) -> list[str]:
+        """The request key of each of a run's model calls, in call order."""
+        rows = self._db.execute(
+            "SELECT record FROM calls WHERE run_id = ? ORDER BY idx", (run_id,)
+        )
+        return [CallRecord.model_validate_json(r[0]).request_key for r in rows]
+
+    def save_prefix_divergence(self, run_id: str, parent_run_id: str) -> PrefixDivergence:
+        """Compute and insert the row for a stored run and its stored parent run (D66)."""
+        row = prefix_divergence(
+            run_id, parent_run_id, self.request_keys(run_id), self.request_keys(parent_run_id)
+        )
+        with self._db:
+            self._db.execute(
+                "INSERT INTO prefix_divergence (run_id, parent_run_id, divergence_call_idx,"
+                " n_shared_calls) VALUES (?, ?, ?, ?)",
+                (row.run_id, row.parent_run_id, row.divergence_call_idx, row.n_shared_calls),
+            )
+        return row
+
+    def get_prefix_divergence(self, run_id: str) -> PrefixDivergence | None:
+        found = self._db.execute(
+            "SELECT run_id, parent_run_id, divergence_call_idx, n_shared_calls"
+            " FROM prefix_divergence WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return None if found is None else PrefixDivergence(*found)
+
     def set_failure_label(self, run_id: str, label: str | None) -> None:
-        """The one update the store allows: a failure label is an annotation added after the
+        """An update the store allows: a failure label is an annotation added after the
         run was scored (D43). It never touches the outcome, utility or anything measured."""
         with self._db:
             cursor = self._db.execute(
@@ -283,10 +513,41 @@ class RunStore:
         if cursor.rowcount != 1:
             raise KeyError(run_id)
 
+    def set_ended_asking_user(self, run_id: str, value: bool | None) -> None:
+        """The second annotation the store allows, like `set_failure_label` (D74)."""
+        with self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET ended_asking_user = ? WHERE run_id = ?",
+                (None if value is None else int(value), run_id),
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(run_id)
+
+    def set_derived_attacker_effect(self, run_id: str, value: bool) -> None:
+        """The third update the store allows (D86): `attacker_effect` for an attack run stored
+        before final environments were kept, derived from its trace. It never overwrites a
+        value, and never touches what was measured (`attack_succeeded` and the rest)."""
+        with self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET attacker_effect = ?, attacker_effect_source = 'derived_from_trace'"
+                " WHERE run_id = ? AND attacker_effect IS NULL AND attack IS NOT NULL",
+                (int(value), run_id),
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(f"{run_id}: not an attack run, or its attacker_effect is already set")
+
     def run_ids(self, experiment: str) -> list[str]:
         rows = self._db.execute(
             "SELECT run_id FROM runs WHERE experiment = ? ORDER BY started_at, run_id",
             (experiment,),
+        )
+        return [r[0] for r in rows]
+
+    def run_ids_with_prefix(self, prefix: str) -> list[str]:
+        """Stored run IDs that start with `prefix` (lab trace takes a short ID)."""
+        rows = self._db.execute(
+            "SELECT run_id FROM runs WHERE substr(run_id, 1, ?) = ? ORDER BY run_id",
+            (len(prefix), prefix),
         )
         return [r[0] for r in rows]
 

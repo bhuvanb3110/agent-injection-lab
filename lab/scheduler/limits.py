@@ -54,9 +54,15 @@ class TokenEstimate:
     input_tokens: int
     total_tokens: int  # input plus the output reserve
 
+    @property
+    def output_tokens(self) -> int:
+        return self.total_tokens - self.input_tokens
+
 
 def estimate_tokens(request: ModelRequest) -> TokenEstimate:
     chars = len(json.dumps(request.messages)) + len(json.dumps(request.tools))
+    if request.response_format is not None:
+        chars += len(json.dumps(request.response_format))  # a schema is sent as input too
     input_tokens = math.ceil(chars / CHARS_PER_TOKEN)
     reserve = (
         OUTPUT_RESERVE if request.max_tokens is None else min(request.max_tokens, OUTPUT_RESERVE)

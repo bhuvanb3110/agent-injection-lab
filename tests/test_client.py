@@ -251,6 +251,19 @@ def test_sends_seed_only_when_set() -> None:
     assert "seed" not in recorder.body(1)
 
 
+def test_sends_response_format_only_when_set() -> None:
+    """The reviewer's strict json_schema (D62), sent as the request holds it."""
+    from lab.defenses.llm_reviewer import VERDICT_FORMAT
+
+    client, recorder = make_client(
+        lambda _: httpx2.Response(200, json=completion({"role": "assistant", "content": "hi"}))
+    )
+    client.complete(request(response_format=VERDICT_FORMAT))
+    client.complete(request())
+    assert recorder.body(0)["response_format"] == VERDICT_FORMAT
+    assert "response_format" not in recorder.body(1)
+
+
 def test_reasoning_tokens_are_part_of_output_tokens_and_cost() -> None:
     message = {"role": "assistant", "content": "done", "reasoning": "think"}
     client, _ = make_client(

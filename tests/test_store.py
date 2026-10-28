@@ -1,6 +1,10 @@
-"""RunStore: round trip, insert-only, request history, totals that are never guessed."""
+"""RunStore: round trip, insert-only, request history, totals that are never guessed.
+
+`run_spec`, `make_call` and `make_record` are fixtures in conftest.py.
+"""
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,70 +14,20 @@ from lab.scheduler.retry import RequestLogEntry
 from lab.scheduler.spec import RunSpec
 from lab.store import RunRecord, RunStore
 
-SPEC = RunSpec(
-    experiment="test",
-    suite="banking",
-    benchmark_version="v1.2.2",
-    user_task_id="user_task_0",
-    topology="t1",
-    provider="groq",
-    model_id="openai/gpt-oss-20b",
-    temperature=0.6,
-    reasoning_effort="medium",
-    max_tokens=None,
-    seed=1002,
-    repeat_idx=2,
-)
+MakeCall = Callable[..., CallRecord]
+MakeRecord = Callable[[list[CallRecord]], RunRecord]
 
 
-def call(**overrides: object) -> CallRecord:
-    fields: dict[str, object] = {
-        "provider": "groq",
-        "model_id": "openai/gpt-oss-20b",
-        "request_key": "abc",
-        "cached": False,
-        "attempts": 2,
-        "input_tokens": 100,
-        "output_tokens": 30,
-        "reasoning_tokens": 12,
-        "latency_s": 0.5,
-        "cost_usd": 0.001,
-        "finish_reason": "stop",
-        "malformed_tool_calls": 1,
-    }
-    return CallRecord(**(fields | overrides))  # type: ignore[arg-type]
-
-
-def record(calls: list[CallRecord]) -> RunRecord:
-    return RunRecord(
-        run_id=SPEC.run_id,
-        spec=SPEC,
-        config_hash="cfg",
-        git_commit="deadbeef",
-        agentdojo_version="0.1.35",
-        seed=SPEC.seed,
-        outcome="solved",
-        outcome_subtype=None,
-        utility=True,
-        state_check_passed=True,
-        error=None,
-        calls=calls,
-        malformed_tool_calls=sum(c.malformed_tool_calls for c in calls),
-        messages=[{"role": "user", "content": [{"type": "text", "content": "Pay my bill."}]}],
-        started_at="2026-10-25T00:00:00+00:00",
-        finished_at="2026-10-25T00:00:03+00:00",
-        wall_latency_s=3.0,
-    )
-
-
-def test_round_trip_keeps_every_field(tmp_path: Path) -> None:
+def test_round_trip_keeps_every_field(
+    tmp_path: Path, run_spec: RunSpec, make_call: MakeCall, make_record: MakeRecord
+) -> None:
     store = RunStore(tmp_path / "runs.sqlite")
-    original = record([call(), call(cached=True, attempts=0)])
+    original = make_record([make_call(), make_call(cached=True, attempts=0)])
     store.save_run(original)
 
-    assert store.has_run(SPEC.run_id)
-    assert store.get_run(SPEC.run_id) == original
-    assert store.run_ids("test") == [SPEC.run_id]
+    assert store.has_run(run_spec.run_id)
+    assert store.get_run(run_spec.run_id) == original
+    assert store.run_ids("test") == [run_spec.run_id]
     assert original.requests_sent == 2
     assert (original.input_tokens, original.output_tokens, original.reasoning_tokens) == (
         200,
@@ -82,10 +36,12 @@ def test_round_trip_keeps_every_field(tmp_path: Path) -> None:
     )
 
 
-def test_flat_columns_are_queryable(tmp_path: Path) -> None:
+def test_flat_columns_are_queryable(
+    tmp_path: Path, make_call: MakeCall, make_record: MakeRecord
+) -> None:
     path = tmp_path / "runs.sqlite"
     store = RunStore(path)
-    store.save_run(record([call()]))
+    store.save_run(make_record([make_call()]))
     store.close()
     row = sqlite3.connect(path).execute(
         "SELECT agentdojo_version, benchmark_version, temperature, reasoning_effort, repeat_idx,"
@@ -94,15 +50,19 @@ def test_flat_columns_are_queryable(tmp_path: Path) -> None:
     assert row == ("0.1.35", "v1.2.2", 0.6, "medium", 2, "solved", 1, 1, 2)
 
 
-def test_a_run_is_stored_once(tmp_path: Path) -> None:
+def test_a_run_is_stored_once(
+    tmp_path: Path, make_call: MakeCall, make_record: MakeRecord
+) -> None:
     store = RunStore(tmp_path / "runs.sqlite")
-    store.save_run(record([call()]))
+    store.save_run(make_record([make_call()]))
     with pytest.raises(sqlite3.IntegrityError):
-        store.save_run(record([call()]))
+        store.save_run(make_record([make_call()]))
 
 
-def test_totals_are_none_if_any_call_lacks_usage() -> None:
-    rec = record([call(), call(input_tokens=None, cost_usd=None)])
+def test_totals_are_none_if_any_call_lacks_usage(
+    make_call: MakeCall, make_record: MakeRecord
+) -> None:
+    rec = make_record([make_call(), make_call(input_tokens=None, cost_usd=None)])
     assert rec.input_tokens is None
     assert rec.cost_usd is None
     assert rec.output_tokens == 60
@@ -148,19 +108,23 @@ def test_an_older_store_gains_the_error_columns(tmp_path: Path) -> None:
     RunStore(path).close()  # opening again doesn't try to add the columns twice
 
 
-def test_failure_label_is_the_one_update(tmp_path: Path) -> None:
+def test_failure_label_is_the_one_update(
+    tmp_path: Path, run_spec: RunSpec, make_call: MakeCall, make_record: MakeRecord
+) -> None:
     store = RunStore(tmp_path / "runs.sqlite")
-    original = record([call()])
+    original = make_record([make_call()])
     store.save_run(original)
-    store.set_failure_label(SPEC.run_id, "asked_user")
-    assert store.get_run(SPEC.run_id) == original.model_copy(update={"failure_label": "asked_user"})
+    store.set_failure_label(run_spec.run_id, "asked_user")
+    assert store.get_run(run_spec.run_id) == original.model_copy(
+        update={"failure_label": "asked_user"}
+    )
     with pytest.raises(KeyError):
         store.set_failure_label("no-such-run", "asked_user")
 
 
-def test_run_id_depends_on_every_spec_field() -> None:
+def test_run_id_depends_on_every_spec_field(run_spec: RunSpec) -> None:
     variants = [
-        SPEC.model_copy(update={field: value})
+        run_spec.model_copy(update={field: value})
         for field, value in [
             ("experiment", "other"),
             ("user_task_id", "user_task_1"),
@@ -173,4 +137,4 @@ def test_run_id_depends_on_every_spec_field() -> None:
         ]
     ]
     ids = {v.run_id for v in variants}
-    assert SPEC.run_id not in ids and len(ids) == len(variants)
+    assert run_spec.run_id not in ids and len(ids) == len(variants)

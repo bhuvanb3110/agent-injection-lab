@@ -50,3 +50,10 @@ def banking_task_ids() -> list[str]:
     return sorted(
         load_banking_suite().user_tasks, key=lambda task_id: int(task_id.rsplit("_", 1)[1])
     )
+
+
+def banking_injection_task_ids() -> list[str]:
+    """Injection task IDs in numeric order: injection_task_0, ..., injection_task_8."""
+    return sorted(
+        load_banking_suite().injection_tasks, key=lambda task_id: int(task_id.rsplit("_", 1)[1])
+    )
