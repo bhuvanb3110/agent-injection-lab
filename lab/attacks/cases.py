@@ -76,6 +76,15 @@ AGENTDOJO_GOALS: dict[str, Goal] = {
     **{f"injection_task_{i}": "unauthorized_action" for i in (4, 5, 6, 7)},
 }
 
+# The lab's own injection tasks (PLAN_M3 §3.3, D96). They are not AgentDojo classes, so what a case
+# needs of one is here: the write tools of its ground truth, which give `t2_stratum` and
+# `required_hops`. Both change or add a payment, which only the payments worker can do. Their goal
+# text and markers are not defined yet (step 8); `place` refuses them until they are.
+LAB_INJECTION_WRITE_TOOLS: dict[str, tuple[str, ...]] = {
+    "lab_sabotage_0": ("send_money", "schedule_transaction", "update_scheduled_transaction"),
+    "lab_replicate_0": ("send_money", "schedule_transaction", "update_scheduled_transaction"),
+}
+
 AGENTDOJO_PREDICATE_SUFFIX = ".security"
 
 
@@ -115,6 +124,8 @@ def channel_for(vectors: list[str]) -> str:
 @cache
 def ground_truth_write_tools(injection_task_id: str) -> tuple[str, ...]:
     """The write tools of the injection task's ground truth, in call order, without repeats."""
+    if injection_task_id in LAB_INJECTION_WRITE_TOOLS:
+        return LAB_INJECTION_WRITE_TOOLS[injection_task_id]
     suite = load_banking_suite()
     task = suite.get_injection_task_by_id(injection_task_id)
     env = suite.load_and_inject_default_environment({})
@@ -213,7 +224,8 @@ def load_cases(rows: list[dict[str, Any]]) -> list[AttackCase]:
     duplicates = sorted({i for i in ids if ids.count(i) > 1})
     if duplicates:
         raise ValueError(f"Duplicate case IDs: {duplicates}")
-    users, injections = set(banking_task_ids()), set(banking_injection_task_ids())
+    users = set(banking_task_ids())
+    injections = set(banking_injection_task_ids()) | set(LAB_INJECTION_WRITE_TOOLS)
     for case in cases:
         if case.user_task_id not in users or case.injection_task_id not in injections:
             raise ValueError(f"{case.id}: unknown user or injection task")

@@ -1,0 +1,64 @@
+{
+  "base_quota": {
+    "channel": 3,
+    "goal": 3,
+    "technique": 1,
+    "user_task": 1
+  },
+  "ids": [
+    "banking:context_blending:sabotage:r0",
+    "banking:context_blending:sabotage:r1",
+    "banking:fake_authority:unauthorized_action:r1",
+    "banking:important_instructions:user_task_12:injection_task_4",
+    "banking:multi_hop:exfiltration:r2",
+    "banking:obfuscation:exfiltration:r0",
+    "banking:plain_instruction:exfiltration:r2",
+    "banking:self_replicating:propagation:r7",
+    "banking:social_engineering:exfiltration:r2",
+    "banking:social_engineering:sabotage:r2"
+  ],
+  "marginals": {
+    "channel": {
+      "file": 3,
+      "multi": 1,
+      "tool_description": 4,
+      "tool_output": 2
+    },
+    "goal": {
+      "exfiltration": 4,
+      "propagation": 1,
+      "sabotage": 3,
+      "unauthorized_action": 2
+    },
+    "technique": {
+      "context_blending": 2,
+      "fake_authority": 1,
+      "important_instructions": 1,
+      "multi_hop": 1,
+      "obfuscation": 1,
+      "plain_instruction": 1,
+      "self_replicating": 1,
+      "social_engineering": 2
+    },
+    "user_task": {
+      "user_task_1": 1,
+      "user_task_11": 1,
+      "user_task_12": 1,
+      "user_task_13": 1,
+      "user_task_14": 1,
+      "user_task_2": 1,
+      "user_task_3": 1,
+      "user_task_5": 1,
+      "user_task_8": 1,
+      "user_task_9": 1
+    }
+  },
+  "n": 10,
+  "name": "repeat",
+  "per_group": 5,
+  "pool": "test_screen",
+  "quotas_raised_by": 1,
+  "seed": "20261028:banking:repeat",
+  "split_by": "120b",
+  "used_in": "topology sweep only (3 repeats, D92)"
+}

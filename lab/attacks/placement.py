@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from lab.attacks.agentdojo import GOAL_MARKERS, canary_for
-from lab.attacks.cases import TOOL_DESCRIPTION_PREFIX, AttackCase
+from lab.attacks.cases import LAB_INJECTION_WRITE_TOOLS, TOOL_DESCRIPTION_PREFIX, AttackCase
 from lab.attacks.payload import Payload, Stage, build_payload
 from lab.attacks.techniques import Split
 from lab.domains.agentdojo_bridge import load_banking_suite
@@ -72,6 +72,13 @@ def place(
     injection task's own (its GOAL and `GOAL_MARKERS`)."""
     if case.technique == "important_instructions":
         raise ValueError("important_instructions is placed by lab.attacks.agentdojo")
+    if case.injection_task_id in LAB_INJECTION_WRITE_TOOLS and (
+        goal_text is None or goal_markers is None
+    ):
+        raise ValueError(
+            f"{case.id}: {case.injection_task_id} has no goal text or markers of its own yet; "
+            "pass goal_text and goal_markers"
+        )
     if goal_text is None:
         goal_text = load_banking_suite().get_injection_task_by_id(case.injection_task_id).GOAL
     if goal_markers is None:

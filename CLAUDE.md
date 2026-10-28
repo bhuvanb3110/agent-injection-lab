@@ -39,6 +39,7 @@ Keep this list current as commands are added.
 - `uv run lab run configs/experiments/smoke_topologies.yaml` (FakeModels, T1 to T5-summary, benign + attack; also run in CI by `tests/test_smoke_topologies.py`)
 - `uv run lab run configs/experiments/m2_exit_v2.yaml` (M2 exit check: real Groq calls, both models, 3 repeats; resumable; run only when Bhuvan says so. Superseded by `m2_exit_v3.yaml` (D82). Supersedes `m2_exit.yaml`, which stopped at 41/72 before D76, D78)
 - `uv run lab run configs/experiments/m2_exit_v3.yaml` (M2 exit check, third attempt: v2 finished 72/72 but 3 runs ended on Groq `tool_use_failed`, D82. Same cells as v2; real Groq calls; resumable; run only when Bhuvan says so. Supersedes `m2_exit_v2.yaml`; don't pool them)
+- `uv run python -m lab.attacks.dataset banking [--check]` (writes the attack dataset, split and subsets in `data/attack_cases/` from `banking_composition.yaml`; `--check` regenerates and compares bytes, no model calls; D112)
 - `uv run lab budget [--model <provider/model_id or model_id>]` (per model: tokens and requests used in the last 24 h and left, and when the next 50,000 tokens free up; reads the run store, makes no model calls)
 - `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
 - `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)

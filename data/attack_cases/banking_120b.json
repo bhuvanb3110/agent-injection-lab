@@ -1,0 +1,86 @@
+{
+  "base_quota": {
+    "channel": 7,
+    "goal": 7,
+    "technique": 3,
+    "user_task": 2
+  },
+  "ids": [
+    "banking:approval_manipulation:unauthorized_action:r4",
+    "banking:approval_manipulation:unauthorized_action:r5",
+    "banking:context_blending:sabotage:r0",
+    "banking:fake_authority:exfiltration:r2",
+    "banking:fake_authority:unauthorized_action:r1",
+    "banking:fake_completion:exfiltration:r1",
+    "banking:fake_completion:sabotage:r1",
+    "banking:important_instructions:user_task_10:injection_task_1",
+    "banking:important_instructions:user_task_11:injection_task_4",
+    "banking:important_instructions:user_task_15:injection_task_3",
+    "banking:important_instructions:user_task_3:injection_task_0",
+    "banking:multi_hop:exfiltration:r0",
+    "banking:multi_hop:sabotage:r0",
+    "banking:multi_hop:unauthorized_action:r2",
+    "banking:obfuscation:exfiltration:r0",
+    "banking:obfuscation:sabotage:r2",
+    "banking:obfuscation:unauthorized_action:r2",
+    "banking:plain_instruction:sabotage:r1",
+    "banking:plain_instruction:unauthorized_action:r2",
+    "banking:self_replicating:propagation:r0",
+    "banking:self_replicating:propagation:r3",
+    "banking:self_replicating:propagation:r4",
+    "banking:self_replicating:propagation:r7",
+    "banking:social_engineering:exfiltration:r2",
+    "banking:social_engineering:unauthorized_action:r0"
+  ],
+  "marginals": {
+    "channel": {
+      "file": 8,
+      "multi": 3,
+      "tool_description": 6,
+      "tool_output": 8
+    },
+    "goal": {
+      "exfiltration": 8,
+      "propagation": 4,
+      "sabotage": 5,
+      "unauthorized_action": 8
+    },
+    "technique": {
+      "approval_manipulation": 2,
+      "context_blending": 1,
+      "fake_authority": 2,
+      "fake_completion": 2,
+      "important_instructions": 4,
+      "multi_hop": 3,
+      "obfuscation": 3,
+      "plain_instruction": 2,
+      "self_replicating": 4,
+      "social_engineering": 2
+    },
+    "user_task": {
+      "user_task_0": 1,
+      "user_task_1": 2,
+      "user_task_10": 2,
+      "user_task_11": 3,
+      "user_task_12": 2,
+      "user_task_13": 2,
+      "user_task_14": 1,
+      "user_task_15": 2,
+      "user_task_2": 3,
+      "user_task_3": 2,
+      "user_task_4": 1,
+      "user_task_5": 1,
+      "user_task_6": 1,
+      "user_task_8": 1,
+      "user_task_9": 1
+    }
+  },
+  "n": 25,
+  "name": "120b",
+  "per_group": null,
+  "pool": "test_screen",
+  "quotas_raised_by": 1,
+  "seed": "20261028:banking:120b",
+  "split_by": null,
+  "used_in": "RQ5: the 120b topology sweep"
+}
