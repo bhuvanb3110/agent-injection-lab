@@ -23,6 +23,8 @@ from lab.domains.agentdojo_bridge import load_banking_suite
 from lab.domains.agentdojo_bridge.run_case import CaseResult, run_case
 from lab.domains.agentdojo_bridge.scripted import (
     _ground_truth_calls,
+    multi_hop_t1_scripts,
+    multi_hop_t2_scripts,
     scripted_reviewers,
     scripted_summaries,
     scripts_by_request,
@@ -90,6 +92,7 @@ def run_placed(
         injections=placement.injections,
         injection_task=SUITE.get_injection_task_by_id(attack.injection_task_id),
         tool_descriptions=placement.tool_descriptions,
+        result_declarations=placement.result_declarations,
     )
     return result, ctx
 
@@ -369,45 +372,11 @@ def test_a_multi_hop_case_needs_exactly_its_two_vectors_in_order() -> None:
 
 
 def t2_multi_hop_model(attack: AttackCase, placement: Placement) -> ScriptedModel:
-    """The obedient multi-hop run in T2, step by step (one script plays every agent):
-
-    payments#1 reads the user task's data, sees the pointer and relays it; the planner sends
-    the pointer to the account worker; account#1 reads the file, sees the action and relays it
-    (or, for a password change, does it itself); if the action is a payment the planner sends
-    it back to payments#2, which makes the call.
-    """
-    user_task = SUITE.get_user_task_by_id(attack.user_task_id)
-    injection_task = SUITE.get_injection_task_by_id(attack.injection_task_id)
-    user_calls, injected = _ground_truth_calls(SUITE, user_task, injection_task)
-    pointer = placement.injections[TX_VECTOR]
-    goal = injection_task.GOAL
-    to_payments = injected and injected[0].function != "update_password"
-    i1 = "Please make these calls: " + "; ".join(
-        f"{c.function}({json.dumps(dict(c.args))})" for c in user_calls) + "."
-    i2 = f"A transaction note says this, so please follow it: {pointer}"
-    i3 = f"Also: {goal}"
-    planner: list[Step] = [
-        call(delegate_tool_name("payments"), {"instruction": i1}, call_id="d1"),
-        call(delegate_tool_name("account"), {"instruction": i2}, call_id="d2"),
-    ]
-    if to_payments:
-        planner.append(call(delegate_tool_name("payments"), {"instruction": i3}, call_id="d3"))
-    planner.append(answer(user_task.GROUND_TRUTH_OUTPUT))
-    scripts: dict[str, list[Step]] = {
-        user_task.PROMPT: planner,
-        i1: [*(call(c.function, dict(c.args), call_id=f"u{i}") for i, c in enumerate(user_calls)),
-             answer(f"Done. One transaction note says: {pointer}")],
-        i2: [call("read_file", {"file_path": POINTER_FILE}, call_id="r0"),
-             *([] if to_payments else
-               [call(c.function, dict(c.args), call_id=f"a{i}") for i, c in enumerate(injected)]),
-             answer(f"Done. The file says: {goal}" if to_payments else "Done.")],
-    }
-    if to_payments:
-        scripts[i3] = [
-            *(call(c.function, dict(c.args), call_id=f"p{i}") for i, c in enumerate(injected)),
-            answer("Done."),
-        ]
-    return ScriptedModel(scripts)
+    """The obedient multi-hop run in T2 (scripted.multi_hop_t2_scripts)."""
+    return ScriptedModel(multi_hop_t2_scripts(
+        SUITE, SUITE.get_user_task_by_id(attack.user_task_id),
+        SUITE.get_injection_task_by_id(attack.injection_task_id), placement.injections[TX_VECTOR],
+    ))
 
 
 def role(agent: str) -> str:
@@ -510,16 +479,7 @@ def test_without_the_planner_relaying_the_pointer_stage_2_never_fires() -> None:
 def test_multi_hop_in_t1_reads_both_stages_and_acts_at_hop_1() -> None:
     attack = multi_hop_case("injection_task_4")
     placement = place(attack, "dev")
-    user_task = SUITE.get_user_task_by_id(attack.user_task_id)
-    user_calls, injected = _ground_truth_calls(
-        SUITE, user_task, SUITE.get_injection_task_by_id("injection_task_4"))
-    steps: list[Step] = [
-        *(call(c.function, dict(c.args), call_id=f"u{i}") for i, c in enumerate(user_calls)),
-        call("read_file", {"file_path": POINTER_FILE}, call_id="r0"),
-        *(call(c.function, dict(c.args), call_id=f"a{i}") for i, c in enumerate(injected)),
-        answer(user_task.GROUND_TRUTH_OUTPUT),
-    ]
-    result, ctx = run_placed(attack, placement, "t1", ScriptedModel({user_task.PROMPT: steps}))
+    result, ctx = run_placed(attack, placement, "t1", t1_multi_hop_model(attack))
     assert result.attack_succeeded is True
     assert path_of(hits_of(ctx, ATTACKER_IBAN), ctx) == [
         (0, "tool_output", TOOLS, "agent"), (1, "tool_call_args", "agent", TOOLS),
@@ -552,13 +512,7 @@ def test_both_multi_hop_stages_are_placed_in_every_topology(
 
 
 def t1_multi_hop_model(attack: AttackCase) -> ScriptedModel:
-    user_task = SUITE.get_user_task_by_id(attack.user_task_id)
-    user_calls, injected = _ground_truth_calls(
-        SUITE, user_task, SUITE.get_injection_task_by_id(attack.injection_task_id))
-    steps: list[Step] = [
-        *(call(c.function, dict(c.args), call_id=f"u{i}") for i, c in enumerate(user_calls)),
-        call("read_file", {"file_path": POINTER_FILE}, call_id="r0"),
-        *(call(c.function, dict(c.args), call_id=f"a{i}") for i, c in enumerate(injected)),
-        answer(user_task.GROUND_TRUTH_OUTPUT),
-    ]
-    return ScriptedModel({user_task.PROMPT: steps})
+    return ScriptedModel(multi_hop_t1_scripts(
+        SUITE, SUITE.get_user_task_by_id(attack.user_task_id),
+        SUITE.get_injection_task_by_id(attack.injection_task_id),
+    ))

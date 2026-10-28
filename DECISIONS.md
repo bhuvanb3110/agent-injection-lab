@@ -116,6 +116,7 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D108 · "Deterministic only" on T2 is `policy_v1` = T4, and reuses T4's runs; no amount caps, no egress allowlist in Banking · Accepted
 - D109 · Step 4: the planted amount is 4321.17; predicates take (pre, post, canary) and a case's `check` must be registered · Accepted
 - D110 · Step 5: the tool-description channel is a `tool_schema` trace event, a hop-0 source that carries the decoded-marker declaration; multi-hop placement · Accepted
+- D111 · Step 6, prerequisites: an obfuscated payload in a tool result or file declares its decoded markers on the result event (closes D110's open point); the multi-hop scripted runs live in `scripted.py` · Accepted
 
 ## Milestone 1
 
@@ -1546,3 +1547,13 @@ Plan: `docs/PLAN_M3.md`, approved 2026-10-28 with Bhuvan's rulings R1–R7, fixe
 - **Not built (open):** an obfuscated payload in a *tool result* (`tool_output`, `file`) has the same declaration problem and no hop-0 event to put it in. `place` raises `NotImplementedError` for it instead of tracing it wrongly. The grid has obfuscation x tool_output and x file cells (PLAN_M3 §3.5, k=5); this needs deciding before step 6 emits them.
 - **Observed:** AgentDojo's injection step flattens a newline in a payload to a space (the transaction subject and the file). Marker matching is whitespace-blind, so hops are unaffected.
 - **Fix found while verifying step 4:** `lab/attacks/predicates.py` imported `BankingEnvironment` at module level. Importing it before `load_suites` is AgentDojo's circular import (`banking.py` warns about it), so `tests/test_sabotage_amount.py` failed at collection when run alone. The import is now type-only. Nothing else changed.
+
+### D111. Step 6, prerequisites: obfuscation in tool results and files declares its markers on the result event (2026-10-28)
+- **Decision (Bhuvan's option 1 for D110's open point):**
+  - `place()` no longer raises for an obfuscated payload in `tool_output` or `file`. `Placement.result_declarations` maps the payload's canary to the goal markers it carries only in encoded form (empty for every other technique and for a tool description, which declares on its `tool_schema` event).
+  - `run_case(..., result_declarations=...)` hands it to `RunContext.result_declarations`. When `LabLLM` traces a tool result sent by the tools (not a relayed or gate-written one), it adds `declared: [...]` to that event's payload for each declared canary found in the result's text, matched with `normalise`. `markers._scanned_texts` searches `declared` with the result's text, so the decoded marker is a hop-0 `tool_output` hit.
+  - The canary is the key because every payload carries it in plain text (D95) and it is unique to its vector (D50). A result that does not hold it (another file, a different transaction list) declares nothing.
+  - The `declared` key is added only when there is something to declare, so every other event is byte-for-byte what it was.
+- **Why:** the alternative, a new event kind, would need render, store and marker rules for it. This is the same shape as D110's schema declaration, on the event that is the real delivery.
+- **Tested (`tests/test_result_declaration.py`):** a decoded base64 marker in a transaction subject and a Unicode-tag marker in a file are hop 0, then hop 1 when acted on; without the declaration the first write is unsourced; reading another file declares nothing; T2 declares to the reading worker only; benign events have no `declared` key.
+- **Prerequisite B (no behaviour change):** the multi-hop scripted runs moved from `tests/test_tool_description.py` to `lab/domains/agentdojo_bridge/scripted.py` as `multi_hop_t1_scripts` and `multi_hop_t2_scripts`, so step 8 can reuse them. The test file builds a `ScriptedModel` from them.

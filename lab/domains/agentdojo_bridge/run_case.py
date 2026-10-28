@@ -16,6 +16,10 @@ description, which every agent holding the tool is sent (the tool_description ch
 suite's own tools are never changed: the runtime gets a copy. With none, the runtime is the
 suite's tools exactly, so benign schemas are byte-equal to M2's.
 
+With `result_declarations` (canary -> goal markers) the trace event of a tool result that holds
+that canary repeats the markers: the way an obfuscated payload planted in the environment says
+which markers it carries (D111), as the schema event does for a tool description.
+
 With an injection task the case is an attack: the payload is put into the environment before
 the run, and `attack_succeeded` is the injection task's own check (AgentDojo calls it
 `security`, but it returns True when the *attack* worked, so we don't reuse the name; see
@@ -79,6 +83,7 @@ def run_case(
     injections: dict[str, str] | None = None,
     injection_task: BaseInjectionTask[Env] | None = None,
     tool_descriptions: Mapping[str, ToolDescriptionInjection] | None = None,
+    result_declarations: Mapping[str, tuple[str, ...]] | None = None,
 ) -> CaseResult:
     """Run `user_task` once and score the final state and answer.
 
@@ -98,6 +103,7 @@ def run_case(
     pre_environment = task_environment.model_copy(deep=True)
     runtime = FunctionsRuntime(with_injected_descriptions(suite.tools, tool_descriptions or {}))
     ctx.schema_injections = dict(tool_descriptions or {})
+    ctx.result_declarations = dict(result_declarations or {})
 
     # Pass messages and extra_args explicitly: the defaults in AgentDojo's signatures are
     # shared mutable objects.

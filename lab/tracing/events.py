@@ -32,6 +32,7 @@ planner's delegate calls go. Marker hops are counted along these edges (lab/trac
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from agentdojo.types import ChatMessage
@@ -82,6 +83,7 @@ def message_event(
     principal: str = USER,
     tool_target: str = TOOLS,
     sender: str | None = None,
+    declared: Sequence[str] = (),
 ) -> TraceEvent:
     """A message in `agent_id`'s transcript, with its sender and receiver read off its role.
 
@@ -89,7 +91,9 @@ def message_event(
     (an assistant message without tool calls) goes to them. `tool_target` is where its tool
     calls go. For T1 these are the user and the tools; a T2 worker's principal is the planner,
     and the planner's tool calls go to the workers. `sender` overrides the sender of a tool
-    result, for the planner's `delegate` results, which a worker wrote.
+    result, for the planner's `delegate` results, which a worker wrote. `declared` are goal
+    markers a tool result carries only in encoded form (D111); they go into the payload as
+    `declared`, and only when there are any, so every other event is what it was.
     """
     if message["role"] == "assistant":
         sender = agent_id
@@ -106,7 +110,7 @@ def message_event(
         from_agent=sender,
         to_agent=receiver,
         call_idx=call_idx,
-        payload=json_safe(message),
+        payload=json_safe(message) | ({"declared": list(declared)} if declared else {}),
     )
 
 

@@ -24,7 +24,7 @@ the run as ModelError "truncated" (D29).
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -60,6 +60,7 @@ from lab.tracing.events import (
     message_event,
     tool_schema_event,
 )
+from lab.tracing.markers import normalise
 
 
 class MalformedToolCall(FunctionCall):
@@ -316,7 +317,12 @@ class LabLLM(BasePipelineElement):
             if message["role"] == "tool" and message["tool_call_id"] is not None:
                 # A result a gate wrote in place of the tools' (a blocked call).
                 sender = ctx.tool_result_senders.get((self.agent_id, message["tool_call_id"]))
-            ctx.events.append(self._event(len(ctx.events), message, None, sender=sender))
+            declared: tuple[str, ...] = ()
+            if message["role"] == "tool" and sender is None:
+                declared = declared_in_result(message, ctx.result_declarations)
+            ctx.events.append(
+                self._event(len(ctx.events), message, None, sender=sender, declared=declared)
+            )
         if self.agent_id not in ctx.transcripts:
             for name, injection in ctx.schema_injections.items():
                 if name in runtime.functions:
@@ -326,11 +332,13 @@ class LabLLM(BasePipelineElement):
                     ))
 
     def _event(
-        self, seq: int, message: ChatMessage, call_idx: int | None, *, sender: str | None = None
+        self, seq: int, message: ChatMessage, call_idx: int | None, *,
+        sender: str | None = None, declared: Sequence[str] = (),
     ) -> TraceEvent:
         return message_event(
             seq, self.agent_id, self.agent_role, message, call_idx,
             principal=self.principal, tool_target=self.tool_target, sender=sender,
+            declared=declared,
         )
 
 
@@ -426,6 +434,25 @@ def malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
             f"arguments. Arguments received: {call.raw_arguments}"
         ),
     )
+
+
+def declared_in_result(
+    message: ChatMessage, declarations: Mapping[str, tuple[str, ...]]
+) -> tuple[str, ...]:
+    """The goal markers declared by payloads that this tool result delivers (D111).
+
+    A payload is in the result if its canary is: the canary is plain text in every payload
+    (D95) and unique to its vector (D50), so it identifies the delivery however the payload's
+    goal is encoded. Matched with `normalise`, as the marker search is.
+    """
+    if not declarations:
+        return ()
+    text = normalise(_text(message["content"]) or "")
+    found: dict[str, None] = {}
+    for canary, markers in declarations.items():
+        if normalise(canary) in text:
+            found.update(dict.fromkeys(markers))
+    return tuple(found)
 
 
 # --- AgentDojo messages -> OpenAI format ---------------------------------------------------

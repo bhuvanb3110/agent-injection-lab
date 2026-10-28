@@ -179,6 +179,11 @@ class RunContext:
     # Tools whose description carries an injected payload (the tool_description channel, D94),
     # by tool name. LabLLM traces a `tool_schema` event the first time an agent is sent one.
     schema_injections: dict[str, ToolDescriptionInjection] = field(default_factory=dict)
+    # Payloads planted in the environment (a transaction subject, a file) that carry goal markers
+    # only in encoded form: canary -> the markers they declare. The canary is plain text in every
+    # payload (D95), so a tool result holding it is a delivery of that payload, and its trace
+    # event repeats the declared markers (the tool-result twin of `schema_injections`, D111).
+    result_declarations: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The strings to look for in the trace, set by whoever builds the run. None: not searched,
     # and the run's marker columns stay NULL.
     markers: list[Marker] | None = None

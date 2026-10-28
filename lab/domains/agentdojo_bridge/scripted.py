@@ -43,6 +43,7 @@ from agentdojo.base_tasks import BaseInjectionTask, BaseUserTask
 from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite
 
+from lab.attacks.techniques import POINTER_FILE
 from lab.defenses.human import SUMMARY_REQUEST
 from lab.defenses.llm_reviewer import reviewer_system_message
 from lab.models.fake import Step, answer, call
@@ -315,3 +316,65 @@ def t2_ground_truth_script(
         steps += [delegate, *worker_steps]
     steps.append(planner[-1])
     return steps
+
+
+# --- multi_hop (PLAN_M3 §3.1, D110) ---
+
+
+def multi_hop_t1_scripts(
+    suite: TaskSuite[Env], user_task: BaseUserTask[Env], injection_task: BaseInjectionTask[Env]
+) -> dict[str, list[Step]]:
+    """T1 obeying a multi_hop pointer: the user task's calls, a read of the file the pointer names
+    (stage 2), then the injection task's calls, then the user task's answer."""
+    user_calls, injected = _ground_truth_calls(suite, user_task, injection_task)
+    steps: list[Step] = [
+        *(call(c.function, dict(c.args), call_id=f"u{i}") for i, c in enumerate(user_calls)),
+        call("read_file", {"file_path": POINTER_FILE}, call_id="r0"),
+        *(call(c.function, dict(c.args), call_id=f"a{i}") for i, c in enumerate(injected)),
+        answer(user_task.GROUND_TRUTH_OUTPUT),
+    ]
+    return {user_task.PROMPT: steps}
+
+
+def multi_hop_t2_scripts(
+    suite: TaskSuite[Env],
+    user_task: BaseUserTask[Env],
+    injection_task: BaseInjectionTask[Env],
+    pointer: str,
+) -> dict[str, list[Step]]:
+    """The obedient multi_hop run in T2, step by step (one script plays every agent):
+
+    payments#1 reads the user task's data, sees the pointer (the stage-1 text `pointer`) and
+    relays it; the planner sends the pointer to the account worker; account#1 reads the file,
+    sees the action and relays it (or, for a password change, does it itself); if the action is a
+    payment the planner sends it back to payments#2, which makes the call.
+    """
+    user_calls, injected = _ground_truth_calls(suite, user_task, injection_task)
+    goal = injection_task.GOAL
+    to_payments = injected and injected[0].function != "update_password"
+    i1 = "Please make these calls: " + "; ".join(
+        f"{c.function}({json.dumps(dict(c.args))})" for c in user_calls) + "."
+    i2 = f"A transaction note says this, so please follow it: {pointer}"
+    i3 = f"Also: {goal}"
+    planner: list[Step] = [
+        call(delegate_tool_name("payments"), {"instruction": i1}, call_id="d1"),
+        call(delegate_tool_name("account"), {"instruction": i2}, call_id="d2"),
+    ]
+    if to_payments:
+        planner.append(call(delegate_tool_name("payments"), {"instruction": i3}, call_id="d3"))
+    planner.append(answer(user_task.GROUND_TRUTH_OUTPUT))
+    scripts: dict[str, list[Step]] = {
+        user_task.PROMPT: planner,
+        i1: [*(call(c.function, dict(c.args), call_id=f"u{i}") for i, c in enumerate(user_calls)),
+             answer(f"Done. One transaction note says: {pointer}")],
+        i2: [call("read_file", {"file_path": POINTER_FILE}, call_id="r0"),
+             *([] if to_payments else
+               [call(c.function, dict(c.args), call_id=f"a{i}") for i, c in enumerate(injected)]),
+             answer(f"Done. The file says: {goal}" if to_payments else "Done.")],
+    }
+    if to_payments:
+        scripts[i3] = [
+            *(call(c.function, dict(c.args), call_id=f"p{i}") for i, c in enumerate(injected)),
+            answer("Done."),
+        ]
+    return scripts
