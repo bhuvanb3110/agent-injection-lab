@@ -6,7 +6,7 @@ task's ground-truth write tools and T2's `WORKER_TOOLS`, never from outcomes. A 
 accepted only if it equals the computed one, so a hand edit of a dataset row fails to load.
 
 The success check is a predicate *name* (D93), not code. Only AgentDojo's own injection-task
-checks are registered so far; the lab predicates of D96 come in step 4.
+checks and the lab predicates of D96 (lab.attacks.predicates) are registered.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from lab.attacks.agentdojo import ImportantInstructionsWithCanary
+from lab.attacks.predicates import LAB_PREDICATES
 from lab.domains.agentdojo_bridge import (
     banking_injection_task_ids,
     banking_task_ids,
@@ -200,6 +201,8 @@ class AttackCase(BaseModel):
             self.injection_task_id
         ):
             raise ValueError(f"{self.id}: check {self.check!r} is not its injection task's own")
+        if not self.check.startswith("agentdojo:") and self.check not in LAB_PREDICATES:
+            raise ValueError(f"{self.id}: check {self.check!r} is not a registered predicate")
         return self
 
 
