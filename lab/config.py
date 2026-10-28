@@ -57,7 +57,7 @@ class AttackConfig(_Strict):
 
 # Config fields added after milestone 1, with the value that means "not used". At that value a
 # field is left out of the config hash, so every milestone-1 config keeps its hash (D48).
-_ADDED_FIELDS = {"topologies": None, "attack": None, "include_benign": True}
+_ADDED_FIELDS = {"topologies": None, "attack": None, "include_benign": True, "cases": None}
 
 
 class ExperimentConfig(_Strict):
@@ -77,6 +77,10 @@ class ExperimentConfig(_Strict):
     max_tokens: int = Field(ge=1)  # sent on every call (D28)
     attack: AttackConfig | None = None
     include_benign: bool = True  # with an attack: also run each user task without injections
+    # Added in milestone 3: the name of an attack-case set (PLAN_M3 step 2). None keeps the
+    # milestone-2 behaviour, where `attack` and the task lists decide the cases. The case files
+    # arrive in step 6; until then a config that names a set can't be expanded.
+    cases: str | None = None
 
     @model_validator(mode="after")
     def _one_way_to_name_the_topology(self) -> ExperimentConfig:
@@ -157,6 +161,11 @@ def expand(config: ExperimentConfig, providers: dict[str, ProviderConfig]) -> li
     progress through the case list and a partial day still gives a paired comparison. The
     topologies of one case and model run together for the same reason.
     """
+    if config.cases is not None:
+        raise ValueError(
+            f"cases: {config.cases!r} can't be expanded yet; case files arrive in milestone 3, "
+            "step 6"
+        )
     infos = [(ref, model_info(ref, providers)) for ref in config.models]
     cases: list[tuple[str, str | None]] = []  # (user task, injection task or None)
     for task_id in config.task_ids():
