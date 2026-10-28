@@ -160,6 +160,10 @@ class RunContext:
     # The injection task's check on the final state, set by run_case on attack runs (D49). It
     # lives here, not only in CaseResult, so it survives a ModelError, which has no CaseResult.
     attack_succeeded: bool | None = None
+    # The final environment as JSON, and the lab's own attacker_effect on it (D86). Set by
+    # run_case for every run that got that far, so they survive a ModelError too.
+    final_environment: str | None = None
+    attacker_effect: bool | None = None
     # The strings to look for in the trace, set by whoever builds the run. None: not searched,
     # and the run's marker columns stay NULL.
     markers: list[Marker] | None = None

@@ -35,6 +35,7 @@ from typing import Literal
 
 from lab.defenses.gates import approvals_requested, gate_decisions
 from lab.domains.agentdojo_bridge.run_case import Outcome
+from lab.scoring.attacker_effect import DERIVED_FROM_TRACE
 from lab.scoring.metrics import Proportion, percentile
 from lab.store import RunRecord
 from lab.tracing.markers import propagation_by_role
@@ -243,6 +244,11 @@ class OversightMetrics:
     asr: Proportion | None
     utility_under_attack: Proportion | None
     asr_by_case: CaseMean | None
+    # The lab's own measure beside ASR (D86): None on the benign controls, and on an attack
+    # group where no run has it. `attacker_effect_derived`: how many of its runs got it from the
+    # trace (they stored no final environment) rather than from the stored environment.
+    attacker_effect: Proportion | None
+    attacker_effect_derived: int
     utility_under_attack_by_case: CaseMean | None
     # The 2x2: (solved, attack_succeeded) -> runs. Benign runs have attack_succeeded False.
     table: dict[tuple[bool, bool], int]
@@ -305,6 +311,11 @@ def _proportion(values: Iterable[bool]) -> Proportion:
     return Proportion(sum(items), len(items))
 
 
+def _attacker_effect(runs: list[RunRecord]) -> Proportion | None:
+    scored = [r for r in runs if r.attacker_effect is not None]
+    return _proportion(bool(r.attacker_effect) for r in scored) if scored else None
+
+
 def _group(
     provider: str, model_id: str, topology: str, attacked: bool, runs: list[RunRecord]
 ) -> OversightMetrics:
@@ -346,6 +357,10 @@ def _group(
         asr=_proportion(bool(r.attack_succeeded) for r in runs) if attacked else None,
         utility_under_attack=(
             _proportion(bool(r.utility_under_attack) for r in runs) if attacked else None
+        ),
+        attacker_effect=_attacker_effect(runs) if attacked else None,
+        attacker_effect_derived=sum(
+            r.attacker_effect_source == DERIVED_FROM_TRACE for r in runs
         ),
         asr_by_case=(
             case_mean([[bool(r.attack_succeeded) for r in by_case[c]] for c in cases])

@@ -55,6 +55,11 @@ class RunRecord(BaseModel):
     # Attack runs only (D49); None on benign runs and on every milestone-1 run: not applicable.
     attack_succeeded: bool | None = None  # the injection task's check on the final state
     utility_under_attack: bool | None = None  # solved and not attack_succeeded
+    # The lab's own attack measure (D86), attack runs only. `attacker_effect_source` says whether
+    # it was scored on the stored `final_environment` or derived from the trace (older runs).
+    attacker_effect: bool | None = None
+    attacker_effect_source: str | None = None
+    final_environment: str | None = None  # JSON; None on runs stored before D86
     # Derived from `marker_hits` (lab/tracing/markers.py:summarise). None: the run set no
     # markers, which is every milestone-1 run.
     propagated: bool | None = None
@@ -248,6 +253,9 @@ _ADDED_COLUMNS = [
     ("runs", "gate_leak_acted_on", "INTEGER"),  # D72
     ("runs", "ended_asking_user", "INTEGER"),  # D74
     ("runs", "out_of_scope_tool_calls", "INTEGER"),  # D76
+    ("runs", "attacker_effect", "INTEGER"),  # D86
+    ("runs", "attacker_effect_source", "TEXT"),  # D86
+    ("runs", "final_environment", "TEXT"),  # D86
 ]
 
 
@@ -301,6 +309,9 @@ class RunStore:
             "injection_task_id": spec.injection_task_id,
             "attack_succeeded": record.attack_succeeded,
             "utility_under_attack": record.utility_under_attack,
+            "attacker_effect": record.attacker_effect,
+            "attacker_effect_source": record.attacker_effect_source,
+            "final_environment": record.final_environment,
             "propagated": record.propagated,
             "infection_depth": record.infection_depth,
             "marker_in_final_output": record.marker_in_final_output,
@@ -387,7 +398,8 @@ class RunStore:
             " malformed_tool_calls, messages, started_at, finished_at, wall_latency_s,"
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
             " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on,"
-            " ended_asking_user, out_of_scope_tool_calls FROM runs WHERE run_id = ?",
+            " ended_asking_user, out_of_scope_tool_calls, attacker_effect, attacker_effect_source,"
+            " final_environment FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -427,6 +439,9 @@ class RunStore:
             gate_leak_acted_on=_bool(row[24]),
             ended_asking_user=_bool(row[25]),
             out_of_scope_tool_calls=row[26],
+            attacker_effect=_bool(row[27]),
+            attacker_effect_source=row[28],
+            final_environment=row[29],
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),
@@ -507,6 +522,19 @@ class RunStore:
             )
         if cursor.rowcount != 1:
             raise KeyError(run_id)
+
+    def set_derived_attacker_effect(self, run_id: str, value: bool) -> None:
+        """The third update the store allows (D86): `attacker_effect` for an attack run stored
+        before final environments were kept, derived from its trace. It never overwrites a
+        value, and never touches what was measured (`attack_succeeded` and the rest)."""
+        with self._db:
+            cursor = self._db.execute(
+                "UPDATE runs SET attacker_effect = ?, attacker_effect_source = 'derived_from_trace'"
+                " WHERE run_id = ? AND attacker_effect IS NULL AND attack IS NOT NULL",
+                (int(value), run_id),
+            )
+        if cursor.rowcount != 1:
+            raise KeyError(f"{run_id}: not an attack run, or its attacker_effect is already set")
 
     def run_ids(self, experiment: str) -> list[str]:
         rows = self._db.execute(

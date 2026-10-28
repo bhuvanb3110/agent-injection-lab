@@ -36,6 +36,7 @@ from agentdojo.types import ChatAssistantMessage, ChatMessage, get_text_content_
 
 from lab.errors import ModelError
 from lab.models.types import CallRecord, RunContext
+from lab.scoring.attacker_effect import attacker_effect
 from lab.tracing.events import TOOLS, TraceEvent
 
 Env = TypeVar("Env", bound=TaskEnvironment)
@@ -106,6 +107,7 @@ def run_case(
             ctx.attack_succeeded = _check_attack(
                 injection_task, "", trace, pre_environment, task_environment
             )
+        _record_final_state(ctx, injection_task, pre_environment, task_environment)
         raise
     messages = list(result_messages)
     final = _final_assistant_message(messages)
@@ -121,6 +123,7 @@ def run_case(
         user_task, final, trace, pre_environment, post_environment
     )
     outcome = _classify(final, state_check_passed)
+    _record_final_state(ctx, injection_task, pre_environment, post_environment)
     if injection_task is not None:
         ctx.attack_succeeded = _check_attack(
             injection_task,
@@ -139,6 +142,18 @@ def run_case(
         malformed_tool_calls=ctx.malformed_tool_calls,
         attack_succeeded=ctx.attack_succeeded,
     )
+
+
+def _record_final_state(
+    ctx: RunContext,
+    injection_task: BaseInjectionTask[Env] | None,
+    pre_environment: Env,
+    post_environment: Env,
+) -> None:
+    """Keep the final environment, and on an attack run the lab's `attacker_effect` (D86)."""
+    ctx.final_environment = post_environment.model_dump_json()
+    if injection_task is not None:
+        ctx.attacker_effect = attacker_effect(pre_environment, post_environment)  # type: ignore[arg-type]
 
 
 def _final_assistant_message(messages: Sequence[ChatMessage]) -> ChatAssistantMessage:
