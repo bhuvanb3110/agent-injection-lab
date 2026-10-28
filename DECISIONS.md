@@ -1297,6 +1297,12 @@ Plan: `docs/PLAN_M3.md`, approved 2026-10-28 with Bhuvan's rulings R1–R7, fixe
   - The canary stays in plain text, and obfuscated cases declare their decoded markers at hop 0. Unicode tag characters are category Cf, and D77 drops Cf.
   - **Technique strata are descriptive only (F3).** There are about 5 cases per technique in screening, and no technique-level hypothesis tests.
 - **Why:** separate wordings keep prompt and classifier defenses from fitting test phrasings, and the marker rule keeps tracing sound.
+- **Built (step 3):** `lab/attacks/techniques.py` (wordings) and `lab/attacks/payload.py` (builder).
+  - No dev wording shares a run of four words with any test wording; `tests/test_payloads.py` checks it, as `validate-rules` will.
+  - No static wording holds a marker. A marker enters a run only through a placeholder.
+  - The builder fails if a declared marker is not in the decoded payload, so a declaration is always true.
+  - An obfuscated payload's goal markers are `decoded_markers`, to be declared at hop 0 (the tracer reads them in step 5). The canary is always plain.
+  - multi_hop has two wordings per split: a pointer (canary, no goal) and the action.
 
 ### D96. Goals: `lab_sabotage_0` and `lab_replicate_0`; persistence cut (2026-10-28)
 - **Decision:**
