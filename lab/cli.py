@@ -352,6 +352,7 @@ def oversight_text(
                      f"{flips.n}, mean flip rate {rate}")
         if g.attacked and key in volume:
             v = volume[key]
+            lines += _attack_outcome_lines(v)
             lines += [
                 f"  calls                  {v.calls} ({v.cached_calls} from cache), "
                 f"{v.requests_sent} provider requests",
@@ -370,6 +371,29 @@ def oversight_text(
             lines.append(f"  prefix vs {parent:<12} {len(diverged)}/{len(rows)} diverged, "
                          f"{shared:.1f} shared calls on average (recomputed, D66)")
     return "\n".join(lines)
+
+
+def _attack_outcome_lines(v: GroupMetrics) -> list[str]:
+    """The attack runs' outcomes, model errors and calls that never ran, by kind (D21, D76, D82).
+    Errors are an outcome of their own, so the attack section shows them as the benign one does."""
+    errors = ", ".join(f"{k} {n}" for k, n in v.model_errors.items()) or "none"
+    lines = [
+        "  outcomes               " + ", ".join(f"{k} {n}" for k, n in v.outcomes.items()),
+        f"  model errors           {v.model_error_total}: {errors}",
+        f"  malformed calls        {v.malformed_tool_calls} in "
+        f"{v.runs_with_malformed_tool_calls} run(s)",
+    ]
+    if v.out_of_scope_tool_calls is not None:
+        lines.append(f"  out-of-scope           {v.out_of_scope_tool_calls} call(s) in "
+                     f"{v.runs_with_out_of_scope_tool_calls} run(s), never run")
+    if v.invalid_argument_tool_calls:
+        lines.append(f"  invalid-args           {v.invalid_argument_tool_calls} call(s) in "
+                     f"{v.runs_with_invalid_argument_tool_calls} run(s), rejected by Groq, "
+                     "never run")
+    if v.unparsed_tool_calls:
+        lines.append(f"  unparsed               {v.unparsed_tool_calls} call(s) in "
+                     f"{v.runs_with_unparsed_tool_calls} run(s), rejected by Groq, never run")
+    return lines
 
 
 def _table_lines(g: OversightMetrics) -> list[str]:
@@ -587,8 +611,8 @@ def _usage_lines(g: GroupMetrics, pad: str) -> list[str]:
     lines = [
         f"{pad}known usage       {g.known_tokens:,} tokens, ${g.known_cost_usd:.4f} "
         f"({g.calls - g.calls_without_usage} of {g.calls} calls)",
-        f"{pad}no usage          {g.calls_without_usage} of {g.calls} calls (out-of-scope "
-        "attempts, D76)",
+        f"{pad}no usage          {g.calls_without_usage} of {g.calls} calls (the provider "
+        "sent none, e.g. a recovered tool_use_failed, D76, D82)",
     ]
     if g.tokens_estimate_high is None:
         return lines + [f"{pad}estimated range   unavailable: a call has no stored estimate"]

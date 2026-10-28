@@ -314,6 +314,45 @@ def test_trace_and_report_name_each_kind(tmp_path: Any) -> None:
     assert "unparsed         1 call(s) in 1 run(s)" in report
 
 
+def test_the_attack_section_shows_model_errors_and_each_kind(tmp_path: Any) -> None:
+    """An attacked run that ends on the cap is a model error, and the attack section says so,
+    with every kind of call that never ran (m2_exit_v3's report hid a truncated attack run)."""
+    from lab.attacks.agentdojo import ATTACK_NAME
+    from lab.cli import oversight_text
+    from lab.scheduler.clock import FakeClock
+    from lab.scheduler.queue import Provenance, Scheduler
+    from lab.scheduler.spec import RunSpec
+    from lab.scoring.attack_metrics import compute_oversight
+    from lab.store import RunStore
+
+    store = RunStore(tmp_path / "runs.sqlite")
+    spec = RunSpec(
+        experiment="cap", suite="banking", benchmark_version="v1.2.2", user_task_id=USER_TASK,
+        topology="t2", provider="fake", model_id="scripted", temperature=0.0,
+        reasoning_effort=None, max_tokens=None, seed=1, repeat_idx=0,
+        attack=ATTACK_NAME, injection_task_id="injection_task_4",
+    )
+    provenance = Provenance(config_hash="cfg", git_commit="deadbeef", agentdojo_version="0.1.35")
+    script = planner_script(*one_of_each_kind())
+    Scheduler(store, lambda s, ctx: attacked_t2(script, ctx)[0], FakeClock(), provenance).run(
+        [spec]
+    )
+    stored = store.get_run(spec.run_id)
+    store.close()
+    assert (stored.outcome, stored.outcome_subtype) == ("model_error", "rejected_tool_calls")
+    [g] = compute_metrics([stored])
+    text = oversight_text(compute_oversight([stored]), volume={(g.provider, g.model_id, "t2"): g},
+                          divergences={})
+    section = text.split("attack runs: n = 1")[1]
+    assert "  outcomes               model_error 1\n" in section
+    assert "  model errors           1: rejected_tool_calls 1\n" in section
+    assert "  malformed calls        1 in 1 run(s)\n" in section
+    assert "  out-of-scope           1 call(s) in 1 run(s), never run\n" in section
+    assert "  invalid-args           1 call(s) in 1 run(s), rejected by Groq" in section
+    assert "  unparsed               1 call(s) in 1 run(s), rejected by Groq" in section
+    assert "(the provider sent none, e.g. a recovered tool_use_failed, D76, D82)" in section
+
+
 # --- m2_exit_v3 (D82) -----------------------------------------------------------------------
 
 
