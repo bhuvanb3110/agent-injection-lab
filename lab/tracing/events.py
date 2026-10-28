@@ -19,6 +19,11 @@ The simulated human of T5 and T5-summary answers through its own pair of events:
 `approval_request` (what the human is shown: the raw call, or the worker's description of it)
 and the human's `approval_decision` back to the worker.
 
+A tool whose description carries an injected payload (the `tool_description` channel, D94) is
+traced as a `tool_schema` event the first time an agent is sent it: from `tools` to that agent,
+holding the injected text and any decoded markers the payload declares. It is the hop-0 source of
+that text, as a tool result is for the other channels. Benign runs have none.
+
 Each event says whose transcript it belongs to (`agent_id`, `agent_role`), who wrote it
 (`from_agent`) and who receives it (`to_agent`). The pseudo-agents `system`, `user` and `tools`
 stand for the system prompt, the user's request and the environment; `workers` is where the
@@ -33,7 +38,8 @@ from agentdojo.types import ChatMessage
 from pydantic import BaseModel, ConfigDict
 
 EventKind = Literal[
-    "message", "delegation", "result", "review_verdict", "approval_request", "approval_decision"
+    "message", "delegation", "result", "review_verdict", "approval_request", "approval_decision",
+    "tool_schema",
 ]
 
 # T1's one agent. A LabLLM that isn't told otherwise is this agent.
@@ -274,6 +280,24 @@ def approval_decision_event(
             "forwards": None,
             "delivered": delivered,
         },
+    )
+
+
+def tool_schema_event(
+    seq: int, agent_id: str, agent_role: str, tool: str, injected: str, declared: list[str]
+) -> TraceEvent:
+    """`agent_id` is sent the schema of `tool`, whose description holds `injected`. `declared`
+    are the goal markers the payload carries only in encoded form (lab/attacks/payload.py): the
+    environment wrote them here although a search of `injected` doesn't show them."""
+    return TraceEvent(
+        seq=seq,
+        agent_id=agent_id,
+        agent_role=agent_role,
+        kind="tool_schema",
+        from_agent=TOOLS,
+        to_agent=agent_id,
+        call_idx=None,
+        payload={"tool": tool, "injected": injected, "declared": declared},
     )
 
 

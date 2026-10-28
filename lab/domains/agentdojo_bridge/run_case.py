@@ -11,6 +11,11 @@ the same thing here as in AgentDojo. Three deliberate differences:
 - Exceptions are never turned into a score. Infrastructure errors and bugs propagate to the
   caller, which re-queues or crashes (D5).
 
+With `tool_descriptions` (tool name -> payload) the payload is appended to that tool's
+description, which every agent holding the tool is sent (the tool_description channel, D94). The
+suite's own tools are never changed: the runtime gets a copy. With none, the runtime is the
+suite's tools exactly, so benign schemas are byte-equal to M2's.
+
 With an injection task the case is an attack: the payload is put into the environment before
 the run, and `attack_succeeded` is the injection task's own check (AgentDojo calls it
 `security`, but it returns True when the *attack* worked, so we don't reuse the name; see
@@ -23,19 +28,19 @@ what AgentDojo reads off the transcript. In T2 it is the workers' calls; the pla
 calls are not tool calls on the environment and are left out.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeVar
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
 from agentdojo.base_tasks import BaseInjectionTask, BaseUserTask
-from agentdojo.functions_runtime import FunctionCall, FunctionsRuntime, TaskEnvironment
+from agentdojo.functions_runtime import Function, FunctionCall, FunctionsRuntime, TaskEnvironment
 from agentdojo.task_suite.task_suite import TaskSuite, functions_stack_trace_from_messages
 from agentdojo.types import ChatAssistantMessage, ChatMessage, get_text_content_as_str
 
 from lab.errors import ModelError
-from lab.models.types import CallRecord, RunContext
+from lab.models.types import CallRecord, RunContext, ToolDescriptionInjection
 from lab.scoring.attacker_effect import attacker_effect
 from lab.tracing.events import TOOLS, TraceEvent
 
@@ -73,6 +78,7 @@ def run_case(
     *,
     injections: dict[str, str] | None = None,
     injection_task: BaseInjectionTask[Env] | None = None,
+    tool_descriptions: Mapping[str, ToolDescriptionInjection] | None = None,
 ) -> CaseResult:
     """Run `user_task` once and score the final state and answer.
 
@@ -90,7 +96,8 @@ def run_case(
     environment = suite.load_and_inject_default_environment(injections or {})
     task_environment = user_task.init_environment(environment)
     pre_environment = task_environment.model_copy(deep=True)
-    runtime = FunctionsRuntime(suite.tools)
+    runtime = FunctionsRuntime(with_injected_descriptions(suite.tools, tool_descriptions or {}))
+    ctx.schema_injections = dict(tool_descriptions or {})
 
     # Pass messages and extra_args explicitly: the defaults in AgentDojo's signatures are
     # shared mutable objects.
@@ -142,6 +149,22 @@ def run_case(
         malformed_tool_calls=ctx.malformed_tool_calls,
         attack_succeeded=ctx.attack_succeeded,
     )
+
+
+def with_injected_descriptions(
+    tools: Sequence[Function],  # type: ignore[type-arg]
+    injected: Mapping[str, ToolDescriptionInjection],
+) -> list[Function]:  # type: ignore[type-arg]
+    """The tools, with each injected payload appended to its tool's description after a blank
+    line. Only the tools named are copied; an unknown tool name is an error, not a no-op."""
+    unknown = sorted(set(injected) - {f.name for f in tools})
+    if unknown:
+        raise ValueError(f"No such tool to inject a description into: {unknown}")
+    return [
+        f.model_copy(update={"description": f"{f.description}\n\n{injected[f.name].text}"})
+        if f.name in injected else f
+        for f in tools
+    ]
 
 
 def _record_final_state(

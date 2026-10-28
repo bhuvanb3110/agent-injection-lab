@@ -51,7 +51,15 @@ from lab.models.client import ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
 from lab.scheduler.limits import estimate_tokens
-from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, TOOLS, USER, TraceEvent, message_event
+from lab.tracing.events import (
+    SINGLE_AGENT,
+    SINGLE_ROLE,
+    TOOLS,
+    USER,
+    TraceEvent,
+    message_event,
+    tool_schema_event,
+)
 
 
 class MalformedToolCall(FunctionCall):
@@ -184,7 +192,7 @@ class LabLLM(BasePipelineElement):
         request = self._request(messages, runtime, ctx)
         # Keep the transcript and the trace in the context, so a run that ends in ModelError
         # still has both, up to and including what this call was sent.
-        self._record_new_messages(ctx, messages)
+        self._record_new_messages(ctx, messages, runtime)
         ctx.transcripts[self.agent_id] = list(messages)
         assistant = self._call(request, ctx)
         transcript = [*messages, assistant]
@@ -292,9 +300,13 @@ class LabLLM(BasePipelineElement):
                 subtype="rejected_tool_calls",
             )
 
-    def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
+    def _record_new_messages(
+        self, ctx: RunContext, messages: Sequence[ChatMessage], runtime: FunctionsRuntime
+    ) -> None:
         """Add a trace event for each message this agent hasn't been sent before: the system
-        prompt and request on the first call, then the tool results since its last reply."""
+        prompt and request on the first call, then the tool results since its last reply. On the
+        first call also one `tool_schema` event for each of its tools whose description carries
+        an injected payload (D94): its schemas are sent with every call, but arrive once."""
         seen = ctx.transcripts.get(self.agent_id, [])
         if list(messages[: len(seen)]) != seen:
             # The trace assumes transcripts only grow. A pipeline that rewrites one is a bug.
@@ -305,6 +317,13 @@ class LabLLM(BasePipelineElement):
                 # A result a gate wrote in place of the tools' (a blocked call).
                 sender = ctx.tool_result_senders.get((self.agent_id, message["tool_call_id"]))
             ctx.events.append(self._event(len(ctx.events), message, None, sender=sender))
+        if self.agent_id not in ctx.transcripts:
+            for name, injection in ctx.schema_injections.items():
+                if name in runtime.functions:
+                    ctx.events.append(tool_schema_event(
+                        len(ctx.events), self.agent_id, self.agent_role, name, injection.text,
+                        list(injection.declared),
+                    ))
 
     def _event(
         self, seq: int, message: ChatMessage, call_idx: int | None, *, sender: str | None = None

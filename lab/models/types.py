@@ -138,6 +138,18 @@ class CallRecord(BaseModel):
     agent_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ToolDescriptionInjection:
+    """A payload appended to one tool's description (the tool_description channel, D94).
+
+    `declared` are the goal markers the payload carries only in encoded form; the `tool_schema`
+    trace event repeats them so the tracer sees them arrive at hop 0.
+    """
+
+    text: str
+    declared: tuple[str, ...] = ()
+
+
 @dataclass
 class RunContext:
     """Per-run accumulator, passed through the pipeline in `extra_args["ctx"]` (D17)."""
@@ -164,6 +176,9 @@ class RunContext:
     # run_case for every run that got that far, so they survive a ModelError too.
     final_environment: str | None = None
     attacker_effect: bool | None = None
+    # Tools whose description carries an injected payload (the tool_description channel, D94),
+    # by tool name. LabLLM traces a `tool_schema` event the first time an agent is sent one.
+    schema_injections: dict[str, ToolDescriptionInjection] = field(default_factory=dict)
     # The strings to look for in the trace, set by whoever builds the run. None: not searched,
     # and the run's marker columns stay NULL.
     markers: list[Marker] | None = None

@@ -115,6 +115,7 @@ Status is from the entry's own updates. `Accepted` means no later entry changes 
 - D107 · Composition of the 81 new Banking cases: the 3×3 grids, the dev rule, eligibility and pair placement · Accepted
 - D108 · "Deterministic only" on T2 is `policy_v1` = T4, and reuses T4's runs; no amount caps, no egress allowlist in Banking · Accepted
 - D109 · Step 4: the planted amount is 4321.17; predicates take (pre, post, canary) and a case's `check` must be registered · Accepted
+- D110 · Step 5: the tool-description channel is a `tool_schema` trace event, a hop-0 source that carries the decoded-marker declaration; multi-hop placement · Accepted
 
 ## Milestone 1
 
@@ -1534,3 +1535,14 @@ Plan: `docs/PLAN_M3.md`, approved 2026-10-28 with Bhuvan's rulings R1–R7, fixe
   - A case's `check` must be an AgentDojo-own name or a registered lab predicate; any other name fails to load.
 - **Structural disagreement with `attacker_effect`:** sabotage and replication can succeed with the payment going to the right recipient, so `attacker_effect` is false there (tested).
 - **Frozen with G6:** changing the amount or the predicates changes the measurement.
+
+### D110. Step 5: tool-description channel and multi-hop placement (2026-10-28)
+- **Decision:**
+  - **Placement.** `run_case(..., tool_descriptions={tool: ToolDescriptionInjection})` appends the payload to that tool's description after a blank line, on a copy of the `Function`. `suite.tools` is never changed, and with no injection the runtime is the suite's tools exactly. A tool name the suite doesn't have is an error. `lab/attacks/placement.py:place` turns an `AttackCase` into environment injections, tool-description injections and markers (the goal markers, then one canary per vector).
+  - **Hop-0 source.** A new trace event kind, `tool_schema` (tools -> the agent), is traced once per agent, the first time that agent is sent a tool with an injected description. In T2 only the worker that holds the tool gets one; every fresh worker (`payments#2`) gets its own. `markers.py` scans it as field `tool_schema` and gives it hop 0, as for a tool result. Benign runs have no such event.
+  - **Decoded markers.** The event repeats the payload's `decoded_markers` as `declared`, and the scan includes them. So an obfuscated goal marker (base64, Unicode tags; D77 drops Cf) is found at hop 0 in the schema, and the first agent that writes it is hop 1. Without the declaration the same write is "unsourced" (tested).
+  - **Multi-hop.** Vectors are `injection_incoming_transaction` (stage 1, the pointer, no goal) then `injection_address_change` (stage 2, the action). `place` refuses any other vector list for `multi_hop`.
+  - **Benign schemas.** `tests/test_tool_description.py` pins sha256 of the 11 suite schemas and the 2 delegate schemas, taken from the M2 merge commit `e3076e5`. No benign schema changed.
+- **Not built (open):** an obfuscated payload in a *tool result* (`tool_output`, `file`) has the same declaration problem and no hop-0 event to put it in. `place` raises `NotImplementedError` for it instead of tracing it wrongly. The grid has obfuscation x tool_output and x file cells (PLAN_M3 §3.5, k=5); this needs deciding before step 6 emits them.
+- **Observed:** AgentDojo's injection step flattens a newline in a payload to a space (the transaction subject and the file). Marker matching is whitespace-blind, so hops are unaffected.
+- **Fix found while verifying step 4:** `lab/attacks/predicates.py` imported `BankingEnvironment` at module level. Importing it before `load_suites` is AgentDojo's circular import (`banking.py` warns about it), so `tests/test_sabotage_amount.py` failed at collection when run alone. The import is now type-only. Nothing else changed.

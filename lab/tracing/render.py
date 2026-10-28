@@ -125,6 +125,10 @@ def _body(e: TraceEvent) -> list[str]:
         if p.get("error"):
             out += _text_lines("error", p["error"])
         return out or [f"{p['role']}: (no text)"]
+    if e.kind == "tool_schema":
+        return [f"tool {p['tool']}: injected description",
+                *_text_lines("injected", p["injected"]),
+                *([f"declared markers {json.dumps(p['declared'])}"] if p["declared"] else [])]
     if e.kind == "delegation":
         return _text_lines(f"instruction to {p['worker']}", p["instruction"])
     if e.kind == "result":
