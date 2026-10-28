@@ -2,7 +2,7 @@
 
 A case study in progress: do more layers of agent oversight make tool-using agents safer against prompt injection, or do they just add more places for attacks to enter?
 
-The lab runs the same banking tasks with and without hidden instructions in the content the agents read. It does this across several agent topologies, with small open models on free API tiers ($0 budget), and reports attack success, task success and cost side by side. **There are no attack results yet.** This README covers the question, the design, what is built and the baseline measured so far.
+The lab runs the same banking tasks with and without hidden instructions in the content the agents read. It does this across several agent topologies, with small open models on free API tiers ($0 budget), and reports attack success, task success and cost side by side. **There are no attack results yet** (the milestone 2 exit run is a plumbing check). This README covers the question, the design, what is built and the baseline measured so far.
 
 - Full spec: [docs/BRIEF.md](docs/BRIEF.md)
 - Milestone 2 plan: [docs/PLAN_M2.md](docs/PLAN_M2.md)
@@ -59,7 +59,12 @@ Utility is the share of tasks the agent solves, with 95% Wilson confidence inter
 
 ## Current status
 
-Milestone 1 (baseline) is done. Milestone 2 (topologies and tracing) is built and tested on FakeModels. The remaining steps are the real exit run on Groq (one attack case through all six topologies, 3 repeats, both models), which has not been run, then hand-checking the T5-summary summaries and writing the handoff. Milestones 3 and 4 (attack library, sweeps and defenses) are not started.
+Milestone 1 (baseline) and milestone 2 (topologies and tracing) are done.
+
+- **Milestone 2:** all six configurations (T1 to T5-summary) run end to end on both models, with full traces. `m2_exit_v3` is the exit check: one attack case (`user_task_2` × `injection_task_4`) plus its benign control, 3 repeats, 72 runs. It is a **plumbing check, n = 3 per cell, and makes no attack-success claims.**
+- **Attack measures:** AgentDojo's attack success (ASR) is kept as scored. Beside it the lab reports `attacker_effect`: the attacker IBAN ends up as the recipient of a transaction that wasn't there at the start (D86). The two differ on two m2_exit_v3 runs (D84).
+- **Next:** milestone 3 (attack suite v1). The M4 plan is set from measured cost: `gpt-oss-20b` is the primary model, `gpt-oss-120b` runs a 25-case topology subset, and the defense sweep runs on T2 only (D87). Milestone 4 (sweeps and defenses) is not started.
+- Candidate AgentDojo issues found so far are in [docs/upstream_issues.md](docs/upstream_issues.md). Nothing has been filed.
 
 ## Run the smoke tests
 
@@ -80,9 +85,9 @@ The smoke runs use scripted FakeModels, so their numbers check the plumbing and 
 ## Limits
 
 - Banking only, one benchmark, two models from one family on one provider.
-- Small samples. The M2 exit run is 1 attack case × 3 repeats, labelled a plumbing check, not a result. Sample sizes for later milestones will be set from measured cost only.
+- Small samples. The M2 exit run is 1 attack case × 3 repeats, labelled a plumbing check, not a result. Sample sizes for later milestones are set from measured cost only (D46, D87).
 - Temperature 0.6 makes single runs noisy, and Groq's seed is best effort.
-- AgentDojo has known quirks. `user_task_9` rewards inaction, and injection tasks 0, 1 and 3 count any transfer to the attacker IBAN as success. Both are flagged in reports and scored as AgentDojo does.
+- AgentDojo has known quirks. `user_task_9` rewards inaction, injection tasks 0, 1 and 3 count any transfer to the attacker IBAN as success, and `user_task_2` × `injection_task_4` scores a redirected rent as safe. The first two are flagged in reports and all are scored as AgentDojo does; `attacker_effect` is reported beside ASR (D86).
 - The simulated human is deterministic. T5 is an upper bound, and T5-summary's parser is frozen at v1 with documented limits (D71).
 - The canary line and a generic model name mean absolute attack success may differ slightly from AgentDojo's published numbers. Comparisons between our own configurations are unaffected (D47).
 - "Asked the user" is reported as a range, not a count: `ended_with_question` is a lower bound (precision 3/3, recall 3/16 on 23 hand-annotated baseline runs) and `requested_user_input` an upper bound (precision 16/20, recall 16/16) (D74).

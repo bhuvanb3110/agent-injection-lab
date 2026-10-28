@@ -2,7 +2,7 @@
 
 Research harness measuring whether layers of multi-agent oversight make tool-using agents safer against prompt injection, or just add more places for attacks to enter. The full spec is `docs/BRIEF.md`. Read the sections relevant to the current task before writing code.
 
-**Current milestone: 2 — Topologies + tracing** (BRIEF §10; plan in `docs/PLAN_M2.md`). Scope for milestones 1–4: AgentDojo **Banking** suite only.
+**Current milestone: 3** (BRIEF §10; milestone 2, topologies + tracing, is done: plan in `docs/PLAN_M2.md`, decisions D51–D89). Scope for milestones 1–4: AgentDojo **Banking** suite only.
 
 ## How we work
 
@@ -42,6 +42,7 @@ Keep this list current as commands are added.
 - `uv run lab budget [--model <provider/model_id or model_id>]` (per model: tokens and requests used in the last 24 h and left, and when the next 50,000 tokens free up; reads the run store, makes no model calls)
 - `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
 - `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab derive-attacker-effect <experiment>` (fills `attacker_effect` for attack runs stored before final environments were kept, from their executed writes; marked `derived_from_trace`; no model calls; D86)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
 - Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` and `trace` take `--store`
 
