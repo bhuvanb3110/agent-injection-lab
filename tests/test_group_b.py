@@ -23,16 +23,16 @@ from lab.cli import main
 from lab.config import load_experiment
 from lab.rules import PROJECT_ROOT
 from lab.rules.golden import load_golden
-from lab.rules.prereg import prereg_sha256
 from lab.rules.scope import baseline_case_id, load_split_data
 from lab.rules.store_checks import (
+    PreregVersion,
     check_blinding,
     check_d74,
     check_d88,
     check_judge,
     check_no_test_before_prereg,
     check_prereg_hash,
-    git_prereg_commit_time,
+    git_prereg_versions,
     run_group_b,
 )
 from lab.scheduler.spec import RunSpec
@@ -46,6 +46,9 @@ DEV_PAIR = ("user_task_2", "injection_task_4")
 assert SPLIT.split_of[baseline_case_id(*TEST_PAIR)] == "test"
 assert SPLIT.split_of[baseline_case_id(*DEV_PAIR)] == "dev"
 COMMITTED = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+V1 = PreregVersion(COMMITTED, "a" * 64)  # the prereg as first committed
+V2 = PreregVersion(datetime(2026, 12, 1, 0, 0, tzinfo=UTC), "b" * 64)  # after an amendment
+VERSIONS = [V1, V2]
 
 
 @pytest.fixture
@@ -172,7 +175,7 @@ def test_a_test_case_run_before_the_prereg_commit_fails(
     saved(store, make_record, pair=TEST_PAIR, started_at="2026-11-05T11:59:59+00:00")
     saved(store, make_record, pair=TEST_PAIR, repeat=1, started_at="2026-11-05T12:00:00+00:00")
     saved(store, make_record, pair=DEV_PAIR, started_at="2026-10-01T00:00:00+00:00")  # dev: free
-    check = check_no_test_before_prereg(store.run_index(), SPLIT, COMMITTED)
+    check = check_no_test_before_prereg(store.run_index(), SPLIT, VERSIONS)
     assert len(check.problems) == 1 and "started 2026-11-05T11:59:59+00:00" in check.problems[0]
 
 
@@ -180,10 +183,10 @@ def test_a_test_case_run_with_no_prereg_commit_fails_but_dev_runs_do_not(
     store: RunStore, make_record: MakeRecord
 ) -> None:
     saved(store, make_record, pair=DEV_PAIR)
-    assert check_no_test_before_prereg(store.run_index(), SPLIT, None).ok
+    assert check_no_test_before_prereg(store.run_index(), SPLIT, []).ok
     saved(store, make_record, pair=TEST_PAIR)
     assert "no commit adds PREREGISTRATION.md" in check_no_test_before_prereg(
-        store.run_index(), SPLIT, None).problems[0]
+        store.run_index(), SPLIT, []).problems[0]
 
 
 def test_a_case_run_is_a_test_run_by_its_case_id(
@@ -196,7 +199,7 @@ def test_a_case_run_is_a_test_run_by_its_case_id(
         "case_id": test_case})
     store.save_run(make_record([]).model_copy(update={
         "spec": spec, "run_id": spec.run_id, "started_at": "2026-11-01T00:00:00+00:00"}))
-    assert not check_no_test_before_prereg(store.run_index(), SPLIT, COMMITTED).ok
+    assert not check_no_test_before_prereg(store.run_index(), SPLIT, VERSIONS).ok
 
 
 def init_git_repo(root: Path, committed_at: str) -> None:
@@ -207,61 +210,94 @@ def init_git_repo(root: Path, committed_at: str) -> None:
         subprocess.run(["git", "-C", str(root), *args], check=True, env=env, capture_output=True)
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_the_prereg_commit_time_is_the_commit_that_first_added_the_file(tmp_path: Path) -> None:
-    root = tmp_path / "gitrepo"
-    root.mkdir()
-    assert git_prereg_commit_time(root) is None  # not a repository
-    (root / "PREREGISTRATION.md").write_text("first\n", encoding="utf-8")
-    init_git_repo(root, "2026-11-05T12:00:00+00:00")
-    assert git_prereg_commit_time(root) == COMMITTED
-    # An amendment is a later commit; the time stays that of the first.
-    (root / "PREREGISTRATION.md").write_text("first\namended\n", encoding="utf-8")
+def commit(root: Path, at: str, *args: str) -> None:
     env = os.environ | {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-                        "GIT_COMMITTER_DATE": "2026-12-01T00:00:00+00:00"}
-    subprocess.run(["git", "-C", str(root), "commit", "-q", "-am", "amend"], check=True, env=env,
+                        "GIT_AUTHOR_DATE": at, "GIT_COMMITTER_DATE": at}
+    subprocess.run(["git", "-C", str(root), "commit", "-q", *args], check=True, env=env,
                    capture_output=True)
-    assert git_prereg_commit_time(root) == COMMITTED
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_an_uncommitted_prereg_has_no_commit_time(tmp_path: Path) -> None:
+def test_every_committed_version_of_the_prereg_is_listed_with_its_time_and_hash(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "gitrepo"
+    root.mkdir()
+    assert git_prereg_versions(root) == []  # not a repository
+    (root / "PREREGISTRATION.md").write_bytes(b"first\n")
+    init_git_repo(root, "2026-11-05T12:00:00+00:00")
+    (root / "PREREGISTRATION.md").write_bytes(b"first\namended\n")
+    commit(root, "2026-12-01T00:00:00+00:00", "-am", "amend")
+    versions = git_prereg_versions(root)
+    assert [v.committed_at for v in versions] == [COMMITTED, V2.committed_at]
+    assert [v.sha256 for v in versions] == [hashlib.sha256(b"first\n").hexdigest(),
+                                            hashlib.sha256(b"first\namended\n").hexdigest()]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_an_uncommitted_or_edited_prereg_is_not_a_committed_version(tmp_path: Path) -> None:
     root = tmp_path / "gitrepo"
     root.mkdir()
     (root / "PREREGISTRATION.md").write_text("draft\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
-    assert git_prereg_commit_time(root) is None
+    assert git_prereg_versions(root) == []
+    subprocess.run(["git", "-C", str(root), "add", "PREREGISTRATION.md"], check=True,
+                   capture_output=True)
+    commit(root, "2026-11-05T12:00:00+00:00", "-m", "prereg")
+    (root / "PREREGISTRATION.md").write_text("draft\nedited, not committed\n", encoding="utf-8")
+    assert [v.sha256 for v in git_prereg_versions(root)] == [hashlib.sha256(b"draft\n").hexdigest()]
 
 
-# --- B4: every M4 run carries the current prereg hash -------------------------------------------
+# --- B4: every M4 run carries the prereg version in force when it started ----------------------
 
 
-def test_every_test_case_run_must_carry_the_current_prereg_hash(
+def test_each_m4_run_must_carry_the_version_in_force_at_its_start(
     repo: Path, store: RunStore, make_record: MakeRecord
 ) -> None:
-    current = prereg_sha256(repo)
-    assert current is not None
-    saved(store, make_record, pair=TEST_PAIR, prereg=current)
-    assert check_prereg_hash(repo, store.run_index(), SPLIT).ok
-    saved(store, make_record, pair=TEST_PAIR, repeat=1)  # none
-    saved(store, make_record, pair=TEST_PAIR, repeat=2, prereg="f" * 64)  # an older prereg
-    saved(store, make_record, pair=DEV_PAIR)  # dev: needs none
-    problems = check_prereg_hash(repo, store.run_index(), SPLIT).problems
-    assert len(problems) == 2
-    assert any("prereg_sha256 is missing" in p for p in problems)
-    assert any(f"prereg_sha256 is {'f' * 64}" in p for p in problems)
+    ok_early = saved(store, make_record, pair=TEST_PAIR, repeat=0,
+                     started_at="2026-11-10T00:00:00+00:00", prereg=V1.sha256)
+    ok_late = saved(store, make_record, pair=TEST_PAIR, repeat=1,
+                    started_at="2026-12-02T00:00:00+00:00", prereg=V2.sha256)
+    saved(store, make_record, pair=DEV_PAIR, repeat=2)  # dev: needs none
+    assert check_prereg_hash(repo, store.run_index(), SPLIT, VERSIONS).ok
+    # Wrong, one way each:
+    old_after = saved(store, make_record, pair=TEST_PAIR, repeat=3,
+                      started_at="2026-12-02T00:00:00+00:00", prereg=V1.sha256)
+    new_before = saved(store, make_record, pair=TEST_PAIR, repeat=4,
+                       started_at="2026-11-10T00:00:00+00:00", prereg=V2.sha256)
+    none = saved(store, make_record, pair=TEST_PAIR, repeat=5,
+                 started_at="2026-11-10T00:00:00+00:00")
+    unknown = saved(store, make_record, pair=TEST_PAIR, repeat=6,
+                    started_at="2026-11-10T00:00:00+00:00", prereg="c" * 64)
+    too_early = saved(store, make_record, pair=TEST_PAIR, repeat=7,
+                      started_at="2026-11-01T00:00:00+00:00", prereg=V1.sha256)
+    problems = check_prereg_hash(repo, store.run_index(), SPLIT, VERSIONS).problems
+    flagged = {p.split(" ")[0] for p in problems}
+    assert flagged == {r.run_id[:12] for r in (old_after, new_before, none, unknown, too_early)}
+    assert ok_early.run_id[:12] not in flagged and ok_late.run_id[:12] not in flagged
+    by_run = {p.split(" ")[0]: p for p in problems}
+    assert "not the one in force at its start" in by_run[old_after.run_id[:12]]
+    assert "not the one in force at its start" in by_run[new_before.run_id[:12]]
+    assert "missing" in by_run[none.run_id[:12]]
+    assert "is not a committed version" in by_run[unknown.run_id[:12]]
+    assert "before any committed version" in by_run[too_early.run_id[:12]]
 
 
-def test_an_amended_prereg_fails_the_runs_made_before_it(
-    repo: Path, store: RunStore, make_record: MakeRecord, write_prereg: WritePrereg
+def test_an_amendment_does_not_invalidate_the_runs_made_before_it(
+    repo: Path, store: RunStore, make_record: MakeRecord
 ) -> None:
-    saved(store, make_record, pair=TEST_PAIR, prereg=prereg_sha256(repo))
-    write_prereg(repo, text_after="\n## Amendment 1\n")
-    assert not check_prereg_hash(repo, store.run_index(), SPLIT).ok
+    """Runs under version 1 stay valid after version 2 is committed; they are not re-run."""
+    saved(store, make_record, pair=TEST_PAIR, started_at="2026-11-10T00:00:00+00:00",
+          prereg=V1.sha256)
+    assert check_prereg_hash(repo, store.run_index(), SPLIT, [V1]).ok
+    assert check_prereg_hash(repo, store.run_index(), SPLIT, [V1, V2]).ok  # after the amendment
+    saved(store, make_record, pair=TEST_PAIR, repeat=1, started_at="2026-12-02T00:00:00+00:00",
+          prereg=V2.sha256)  # runs made after it carry version 2
+    assert check_prereg_hash(repo, store.run_index(), SPLIT, [V1, V2]).ok
 
 
-def test_the_benign_controls_of_a_pinned_experiment_must_carry_the_hash_too(
+def test_the_benign_controls_of_a_pinned_experiment_must_carry_a_version_too(
     repo: Path, store: RunStore, make_record: MakeRecord, write_prereg: WritePrereg
 ) -> None:
     config = repo / "configs/experiments/controls.yaml"
@@ -274,16 +310,16 @@ def test_the_benign_controls_of_a_pinned_experiment_must_carry_the_hash_too(
     pinned_hash = load_experiment(config).config_hash
     saved(store, make_record, experiment="controls", config_hash=pinned_hash)  # benign, pinned
     saved(store, make_record, experiment="other", repeat=1, config_hash="not pinned")
-    problems = check_prereg_hash(repo, store.run_index(), SPLIT).problems
+    problems = check_prereg_hash(repo, store.run_index(), SPLIT, VERSIONS).problems
     assert len(problems) == 1 and "(controls)" in problems[0]
 
 
-def test_m4_runs_with_no_prereg_file_fail_b4(
+def test_m4_runs_with_no_committed_prereg_fail_b4(
     repo: Path, store: RunStore, make_record: MakeRecord
 ) -> None:
-    saved(store, make_record, pair=TEST_PAIR)
-    (repo / "PREREGISTRATION.md").unlink()
-    assert "does not exist" in check_prereg_hash(repo, store.run_index(), SPLIT).problems[0]
+    saved(store, make_record, pair=TEST_PAIR, prereg=V1.sha256)
+    assert "before any committed version" in check_prereg_hash(
+        repo, store.run_index(), SPLIT, []).problems[0]
 
 
 # --- B5: the judge ------------------------------------------------------------------------------
@@ -295,10 +331,8 @@ def add_verdicts(store_path: Path, rows: list[tuple[str, str]]) -> None:
         db.executemany("INSERT INTO judge_verdicts VALUES (?, ?, 'done')", rows)
 
 
-def register_judge(repo: Path, at: str, kappa: float) -> None:
-    (repo / "FREEZE_LOG.yaml").write_text(yaml.safe_dump({"judge": {
-        "registered_at": at, "code_sha256": "1" * 64, "labels_sha256": "2" * 64, "kappa": kappa,
-    }}), encoding="utf-8")
+def register_judge(freeze_log: Any, at: str, kappa: float) -> None:
+    freeze_log.write([freeze_log.judge(at, kappa)])
 
 
 def test_no_judge_means_nothing_to_check(
@@ -309,7 +343,7 @@ def test_no_judge_means_nothing_to_check(
 
 
 def test_a_verdict_on_a_test_case_needs_a_registration_before_it(
-    repo: Path, tmp_path: Path, store: RunStore, make_record: MakeRecord
+    repo: Path, tmp_path: Path, store: RunStore, make_record: MakeRecord, freeze_log: Any
 ) -> None:
     test_run = saved(store, make_record, pair=TEST_PAIR)
     dev_run = saved(store, make_record, pair=DEV_PAIR)
@@ -317,34 +351,22 @@ def test_a_verdict_on_a_test_case_needs_a_registration_before_it(
                                             (dev_run.run_id, "2026-01-01T00:00:00+00:00")])
     index = store.run_index()
     assert "no judge registration" in check_judge(repo, store, index, SPLIT).problems[0]
-    register_judge(repo, "2026-12-02T10:00:00Z", 0.7)
+    register_judge(freeze_log, "2026-12-02T10:00:00Z", 0.7)
     problems = check_judge(repo, store, index, SPLIT).problems
     assert len(problems) == 1 and "before the registration" in problems[0]  # the dev one is free
-    register_judge(repo, "2026-12-02T09:00:00Z", 0.7)
+    register_judge(freeze_log, "2026-12-02T09:00:00Z", 0.7)
     assert check_judge(repo, store, index, SPLIT).ok
-    register_judge(repo, "2026-12-02T09:00:00Z", 0.55)
+    register_judge(freeze_log, "2026-12-02T09:00:00Z", 0.55)
     assert "below 0.6" in check_judge(repo, store, index, SPLIT).problems[0]
 
 
 # --- B6: blinding -------------------------------------------------------------------------------
 
 
-def log_view(store_path: Path, at: str, screen_runs: int) -> None:
-    RunStore(store_path).log_outcome_view(at, "report", "screen", screen_runs)
-
-
-def freeze_all(repo: Path) -> None:
-    freezes = []
-    for defense in ("prompt", "detection", "architecture", "deterministic", "arch_det",
-                    "everything"):
-        rel = f"configs/defenses/{defense}.yaml"
-        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        (repo / rel).write_text(f"defense: {defense}\n", encoding="utf-8", newline="\n")
-        freezes.append({"defense": defense, "config": rel, "frozen_at": "2026-11-20T09:00:00Z",
-                        "sha256": hashlib.sha256((repo / rel).read_bytes()).hexdigest()})
-    (repo / "FREEZE_LOG.yaml").write_text(yaml.safe_dump({
-        "freezes": freezes, "unblinding": {"recorded_at": "2026-12-01T10:00:00Z"}}),
-        encoding="utf-8")
+def log_view(store_path: Path, at: str, runs: int, scope: str = "test_screen") -> None:
+    store = RunStore(store_path)
+    store.log_outcome_view(at, "report", "screen", scope, runs)
+    store.close()
 
 
 def test_no_view_means_nothing_to_check(repo: Path, store: RunStore) -> None:
@@ -359,15 +381,28 @@ def test_a_view_of_test_screen_outcomes_without_an_unblinding_record_fails(
 
 
 def test_a_view_before_the_unblinding_record_fails_and_one_after_passes(
-    repo: Path, tmp_path: Path, store: RunStore
+    repo: Path, tmp_path: Path, store: RunStore, freeze_log: Any
 ) -> None:
-    freeze_all(repo)
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     log_view(tmp_path / "runs.sqlite", "2026-12-01T10:00:00+00:00", 2)
     log_view(tmp_path / "runs.sqlite", "2026-12-03T00:00:00+00:00", 2)
     assert check_blinding(repo, store).ok
     log_view(tmp_path / "runs.sqlite", "2026-11-30T23:59:59+00:00", 2)
     problems = check_blinding(repo, store).problems
     assert len(problems) == 1 and "before the unblinding record" in problems[0]
+
+
+def test_a_test_confirm_view_needs_the_confirm_unblinding_record(
+    repo: Path, tmp_path: Path, store: RunStore, freeze_log: Any
+) -> None:
+    freeze_log.write(freeze_log.full())  # screen unblinded, confirmation registered
+    log_view(tmp_path / "runs.sqlite", "2026-12-15T00:00:00+00:00", 2, "test_confirm")
+    assert "no test_confirm unblinding record" in check_blinding(repo, store).problems[0]
+    freeze_log.write([*freeze_log.full(),
+                      freeze_log.unblinding(at="2026-12-20T00:00:00Z", scope="test_confirm")])
+    assert len(check_blinding(repo, store).problems) == 1  # the view is from before the record
+    log_view(tmp_path / "runs.sqlite", "2026-12-21T00:00:00+00:00", 2, "test_confirm")
+    assert len(check_blinding(repo, store).problems) == 1  # still only the early one
 
 
 def test_a_view_that_showed_no_test_screen_outcome_is_not_a_violation(
@@ -396,7 +431,7 @@ def test_the_command_runs_group_b_against_a_store_and_exits_1_on_a_failure(
     saved(store, make_record, pair=TEST_PAIR)  # a test run with no prereg hash
     store.close()
     assert main(args) == 1
-    assert "FAILED  B4 every M4 run carries the current prereg hash" in capsys.readouterr().out
+    assert "FAILED  B4 every M4 run carries the prereg version in force" in capsys.readouterr().out
 
 
 def test_the_command_reports_a_missing_store(
@@ -410,6 +445,6 @@ def test_the_command_reports_a_missing_store(
 def test_group_b_on_the_real_golden_file_needs_the_baseline_in_the_store(
     repo: Path, store: RunStore
 ) -> None:
-    checks = run_group_b(repo, store, prereg_commit_time=lambda root: None)
+    checks = run_group_b(repo, store, prereg_versions=lambda root: [])
     assert [c.name.split()[0] for c in checks] == ["B1", "B2", "B3", "B4", "B5", "B6"]
     assert [c.name.split()[0] for c in checks if not c.ok] == ["B1"]

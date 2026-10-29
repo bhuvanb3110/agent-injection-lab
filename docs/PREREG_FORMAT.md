@@ -2,12 +2,12 @@
 
 What step 11 must write so that `lab validate-rules` can read it. The code that reads these files is `lab/rules/prereg.py`; the checks are in `lab/rules/checks.py` (group A) and `lab/rules/store_checks.py` (group B). Nothing here writes `PREREGISTRATION.md`.
 
-There are three files, all at the repository root or under `configs/`:
+There are three files, at the repository root or under `configs/`:
 
 | File | Written by | Changes after the gate? |
 |---|---|---|
 | `PREREGISTRATION.md` | step 11 | only by a dated amendment, appended (D106). Its SHA-256 is `prereg_sha256` on every M4 run. |
-| `FREEZE_LOG.yaml` | M4 (the six freezes), the unblinding step, the judge step | yes: records are added. It is separate from the prereg so that a freeze does not change the prereg's hash. |
+| `FREEZE_LOG.yaml` | M4 (the six freezes), the unblinding steps, the judge step, the M6 confirmation | yes: entries are appended, as a hash chain. It is separate from the prereg so that a freeze does not change the prereg's hash. |
 | `configs/golden/behaviour_v1.yaml` | step 10 (already written) | no: it is pinned. |
 
 ## 1. `PREREGISTRATION.md`: two fenced blocks
@@ -51,36 +51,55 @@ The key is `<provider>/<model id>`. `reasoning_effort` is `low`, `medium`, `high
 
 ## 2. `FREEZE_LOG.yaml`
 
-A YAML mapping with three optional keys. An absent file means nothing is frozen yet, which group A accepts. Times are full UTC date-times with a `Z` (`2026-11-25T14:03:00Z`); a bare date is refused, because an order of events on one day has to be checkable.
+A YAML mapping with one key, `entries`: an ordered list, oldest first. An absent file means nothing is frozen yet, which group A accepts. Times are full UTC date-times with a `Z` (`2026-11-25T14:03:00Z`); a bare date is refused, because an order of events on one day has to be checkable. Entry times may not go backwards down the list.
+
+Every entry has a `kind` and a `prev`. **`prev` is the hash of the entry before it** (the first entry has `prev: genesis`). The hash of an entry is the SHA-256 of its canonical JSON: the entry's fields, `prev` included, as JSON with sorted keys and no spaces, times as UTC with a `Z`. It depends on what the entry says and not on how the YAML is laid out. To write the log, build the entries without `prev` and call `lab.rules.prereg.link(entries)`, which fills it in; dump the result under `entries:`. (A hash that is all digits must be quoted in YAML, or it is read as a number; `yaml.safe_dump` does this.)
 
 ```yaml
-freezes:                       # one record per defense, six in all
-  - defense: prompt            # prompt | detection | architecture | deterministic | arch_det | everything
+entries:
+  - kind: freeze                # one per defense, six in all
+    prev: genesis
+    defense: prompt             # prompt | detection | architecture | deterministic | arch_det | everything
     config: configs/defenses/prompt.yaml
-    sha256: <64 hex>           # raw bytes of that file, at the time of the freeze
+    sha256: <64 hex>            # raw bytes of that file, at the time of the freeze
     frozen_at: 2026-11-20T09:00:00Z
   # ... architecture, detection, arch_det, everything
-  - defense: deterministic     # = T4 = policy_v1 (D108): its record points at the policy file
+  - kind: freeze                # deterministic = T4 = policy_v1 (D108): points at the policy file
+    prev: <hash of the entry before>
+    defense: deterministic
     config: configs/policies/banking_v1.yaml
     sha256: <64 hex>
     frozen_at: 2026-11-20T09:05:00Z
-
-unblinding:                    # the dated record that lets test-screen outcomes be read (D103)
-  recorded_at: 2026-12-01T10:00:00Z
-  note: all six defenses frozen; core results may be read
-
-judge:                         # the judge's registration (D105); added after the gate
-  registered_at: 2026-12-02T10:00:00Z
-  code_sha256: <64 hex>
-  labels_sha256: <64 hex>
-  kappa: 0.71
+  - kind: unblinding            # lets test-screen outcomes be read (D103)
+    prev: <hash of the entry before>
+    scope: test_screen
+    recorded_at: 2026-12-01T10:00:00Z
+    note: all six defenses frozen; core results may be read
+  - kind: judge                 # the judge's registration (D105); added after the gate
+    prev: <hash of the entry before>
+    registered_at: 2026-12-02T10:00:00Z
+    code_sha256: <64 hex>
+    labels_sha256: <64 hex>
+    kappa: 0.71
+  - kind: confirmation          # the planned M6 registration (D106): see below
+    prev: <hash of the entry before>
+    registered_at: 2026-12-10T10:00:00Z
+    selection: configs/m6_selection.yaml   # a committed file naming the configurations to confirm
+    selection_sha256: <64 hex>
+  - kind: unblinding            # lets test-confirm outcomes be read
+    prev: <hash of the entry before>
+    scope: test_confirm
+    recorded_at: 2026-12-20T10:00:00Z
 ```
 
 Rules (group A, "A2 freeze log"):
 
+- **The chain.** An entry whose `prev` is not the hash of the entry before it fails, and is reported with the `prev` it should have. Editing an earlier entry changes its hash and so breaks the entry after it; removing or reordering entries breaks the next one. `lab report`, `lab trace` and the guard treat a log with a broken chain as unusable (everything stays blinded and refused). **Limit:** nothing follows the last entry, so the chain cannot see the last entry being edited or removed; git history shows that.
 - A freeze is valid if its defense appears once, its `config` file exists, and the file still has the recorded `sha256`. A config **edited after its freeze** fails. A re-freeze is an amendment, which this log does not take.
-- The unblinding record is valid only if **all six** defenses have a valid freeze **at or before** its `recorded_at`. A premature record fails group A, and `lab report` and `lab trace` keep the outcomes hidden (D103).
-- The judge's `kappa` must be at least 0.6.
+- The `test_screen` unblinding entry is valid only if **all six** defenses have a valid freeze **at or before** its `recorded_at`. A premature entry fails group A, and `lab report` and `lab trace` keep the outcomes hidden (D103).
+- **The `confirmation` entry** (the planned M6 registration, D106) is valid only if there is exactly one, its `selection` file exists with the recorded hash, and it comes **after** a valid `test_screen` unblinding (M6 picks configurations from the screening results). Until a valid one exists, `lab run` refuses any test-confirm case. Test-confirm cases are the test-split cases that are not among the 50 screening cases.
+- The `test_confirm` unblinding entry is valid only if a valid confirmation entry exists at or before it. It is what lets `lab report` and `lab trace` show test-confirm outcomes; they are blinded exactly as test-screen ones are (D103), by their own entry.
+- At most one entry of each of: judge, confirmation, and unblinding per scope. The judge's `kappa` must be at least 0.6.
 
 **Defense configs and the first test-screen run (A2 "defense configs").** A config under `configs/defenses/` is a draft until an experiment uses it. An experiment in `configs/experiments/` uses a defense config if its YAML contains that config's path (`configs/defenses/...`) anywhere, in whatever field M4 gives it. If such an experiment has test-split cases, that config must be in the freeze log with the hash it has now, or group A fails, and with it the guard. An experiment on dev cases only may use a draft.
 
@@ -98,15 +117,15 @@ A fixture is a rule's frozen answer, taken from the rule's DECISIONS entry. A ru
 |---|---|
 | B1 D74 confusion table | the stored runs of `baseline_banking` and `baseline_banking_repeats` that carry a hand annotation (`lab label`) |
 | B2 D88 | `configs/labels/m2_exit_summaries.yaml` (no store needed) |
-| B3 no test run before the prereg commit | `runs.started_at` against the commit that first added `PREREGISTRATION.md` (`git log --diff-filter=A`). A test run with no such commit fails. |
-| B4 every M4 run carries the current prereg hash | `runs.prereg_sha256` of every test-split run and every benign run of a pinned experiment, against the SHA-256 of `PREREGISTRATION.md` today. **An amendment changes that hash**, so runs made before it fail this check unless they are re-made under the amended prereg (they have another run ID, so they are separate runs). |
-| B5 judge | the table `judge_verdicts(run_id, scored_at, ...)`, which the judge module (step 7) must create with at least those two columns, against `judge.registered_at` and `kappa` |
-| B6 blinding | the table `outcome_views`, written by `lab report` and `lab trace` whenever they show a test-screen run's outcome (`viewed_at`, `command`, `detail`, `test_screen_runs`), against `unblinding.recorded_at` |
+| B3 no test run before the prereg commit | `runs.started_at` against the commit that first added `PREREGISTRATION.md` (`git log`). A test run with no such commit fails. |
+| B4 every M4 run carries the prereg version in force | `runs.prereg_sha256` of every test-split run and every benign run of a pinned experiment. It must equal the SHA-256 of **a committed version of `PREREGISTRATION.md`** (`git show <commit>:PREREGISTRATION.md`), and of the version **in force when the run started**: the latest commit that touched the file at or before the run's `started_at`. A run with no hash, a hash that was never committed, or an older or newer version than the one in force fails. **An amendment adds a version; it does not invalidate the runs made under the version before it.** |
+| B5 judge | the table `judge_verdicts(run_id, scored_at, ...)`, which the judge module (step 7) must create with at least those two columns, against the `judge` entry's `registered_at` and `kappa` |
+| B6 blinding | the table `outcome_views`, written by `lab report` and `lab trace` whenever they show a blinded run's outcome (`viewed_at`, `command`, `detail`, `scope`, `runs`), against the `unblinding` entry of the same `scope` |
 
-A run is a **test run** if its case is in the test split (a run of milestone 2's attack is the AgentDojo case of its pair). **Test-screen** runs are the 50 cases of `banking_test_screen.json`.
+A run is a **test run** if its case is in the test split (a run of milestone 2's attack is the AgentDojo case of its pair). **Test-screen** runs are the 50 cases of `banking_test_screen.json`; **test-confirm** runs are the other test-split cases.
 
 ## 5. `lab run`, `prereg_sha256` and `lab report --blind`
 
-- `lab run` refuses an experiment that contains a test-split case, or that is a pinned benign-control config, unless **group A passes**. An absent `PREREGISTRATION.md` fails group A. Every other experiment, every dev-case experiment included, runs as before.
-- A run that passes the guard has `prereg_sha256` set (SHA-256 of `PREREGISTRATION.md`'s raw bytes) in its run spec, and so in its run ID. A run made outside the guard has none, and its run ID is what it was (D48 pattern).
-- `lab report --blind` shows per model and topology only the number of runs, model errors, calls, tokens, cost and latency. Without `--blind`, the same view replaces the outcomes of **test-screen** runs until `blinding_state` says the freeze log holds a valid unblinding record; other runs are reported in full. `lab trace` refuses a blinded run.
+- `lab run` refuses an experiment that contains a test-split case, or that is a pinned benign-control config, unless **group A passes**. An absent `PREREGISTRATION.md` fails group A. It refuses an experiment with a **test-confirm** case until the freeze log holds a valid `confirmation` entry. Every other experiment, every dev-case experiment included, runs as before. There is no flag, environment variable or config field that skips this.
+- A run that passes the guard has `prereg_sha256` set (SHA-256 of `PREREGISTRATION.md`'s raw bytes when `lab run` started). It is **recorded only**: it is never part of the run ID, so amending the prereg changes no run ID, a sweep carries on where it stopped, and runs already stored are not run again (they keep the hash of the version they ran under). After committing an amendment, start `lab run` again before the next run starts, so that later runs carry the new version: a run that starts after an amendment but carries the old hash fails B4.
+- `lab report --blind` shows per model and topology only the number of runs, model errors, calls, tokens, cost and latency. Without `--blind`, the same view replaces the outcomes of **test-screen** runs until the freeze log holds a valid `test_screen` unblinding entry, and those of **test-confirm** runs until it holds a valid `test_confirm` one; other runs are reported in full. `lab trace` refuses a blinded run.

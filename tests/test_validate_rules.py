@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -33,9 +34,9 @@ from lab.rules.checks import (
     run_group_a,
 )
 from lab.rules.prereg import (
-    DEFENSES,
     PreregError,
     blinding_state,
+    confirmation_state,
     fenced_blocks,
     load_pins,
     load_values,
@@ -43,6 +44,7 @@ from lab.rules.prereg import (
 )
 
 WritePrereg = Callable[..., Path]
+FreezeLogWriter = Any  # tests/conftest.py
 DATA = "data/attack_cases"
 HASH = "a" * 64  # a pin; all digits would be read as a number by YAML
 
@@ -194,23 +196,6 @@ def write_config(root: Path, rel: str, text: str = "defense: x\n") -> str:
     return sha256_file(root / rel)
 
 
-def write_freeze_log(root: Path, freezes: list[dict[str, object]], **rest: object) -> None:
-    (root / "FREEZE_LOG.yaml").write_text(
-        yaml.safe_dump({"freezes": freezes, **rest}, sort_keys=False), encoding="utf-8")
-
-
-def freeze_all(root: Path, but: tuple[str, ...] = (), at: str = "2026-11-20T09:00:00Z") -> list[
-        dict[str, object]]:
-    records = []
-    for defense in DEFENSES:
-        rel = f"configs/defenses/{defense}.yaml"
-        digest = write_config(root, rel, f"defense: {defense}\n")
-        if defense not in but:
-            records.append({"defense": defense, "config": rel, "sha256": digest,
-                            "frozen_at": at})
-    return records
-
-
 EXPERIMENT_ON_TEST_SCREEN = {
     "name": "m4_prompt", "suite": "banking", "topology": "t2", "user_tasks": ["user_task_0"],
     "models": [{"provider": "fake", "model_id": "obedient"}], "repeats": 1, "seed": 1,
@@ -235,15 +220,17 @@ def test_a_defense_config_unpinned_at_first_test_screen_use_fails(repo: Path) ->
                               "log",)
 
 
-def test_a_frozen_defense_config_is_accepted(repo: Path) -> None:
+def test_a_frozen_defense_config_is_accepted(repo: Path, freeze_log: FreezeLogWriter) -> None:
     write_experiment(repo)
-    write_freeze_log(repo, freeze_all(repo))
+    freeze_log.write(freeze_log.freezes())
     assert check_defense_configs(repo).ok and check_freeze_log(repo).ok
 
 
-def test_a_defense_config_edited_after_its_freeze_fails(repo: Path) -> None:
+def test_a_defense_config_edited_after_its_freeze_fails(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
     write_experiment(repo)
-    write_freeze_log(repo, freeze_all(repo))
+    freeze_log.write(freeze_log.freezes())
     (repo / "configs/defenses/prompt.yaml").write_text("defense: edited\n", encoding="utf-8")
     assert not check_defense_configs(repo).ok
     assert check_freeze_log(repo).problems == (
@@ -273,62 +260,221 @@ def test_an_experiment_naming_a_defense_in_any_field_is_found(repo: Path) -> Non
     assert not check_defense_configs(repo).ok  # no freeze log
 
 
-def test_a_freeze_log_with_two_records_for_a_defense_fails(repo: Path) -> None:
-    records = freeze_all(repo)
-    write_freeze_log(repo, [*records, records[0]])
+def test_a_freeze_log_with_two_records_for_a_defense_fails(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    records = freeze_log.freezes()
+    freeze_log.write([*records, records[0]])
     assert any("frozen 2 times" in p for p in check_freeze_log(repo).problems)
 
 
-def test_a_freeze_of_a_missing_file_and_a_malformed_log_fail(repo: Path) -> None:
-    write_freeze_log(repo, [{"defense": "prompt", "config": "configs/defenses/none.yaml",
-                             "sha256": "0" * 64, "frozen_at": "2026-11-20T09:00:00Z"}])
-    assert check_freeze_log(repo).problems == ("prompt: configs/defenses/none.yaml does not exist",)
-    (repo / "FREEZE_LOG.yaml").write_text("freezes: [nonsense]\n", encoding="utf-8")
+def test_a_freeze_of_a_missing_file_and_a_malformed_log_fail(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([{"kind": "freeze", "defense": "prompt", "config": "configs/defenses/no.yaml",
+                       "sha256": "a" * 64, "frozen_at": "2026-11-20T09:00:00Z"}])
+    assert check_freeze_log(repo).problems == ("prompt: configs/defenses/no.yaml does not exist",)
+    (repo / "FREEZE_LOG.yaml").write_text("entries: [nonsense]\n", encoding="utf-8")
     assert "FREEZE_LOG.yaml is malformed" in check_freeze_log(repo).problems[0]
 
 
-def test_a_bare_date_is_not_a_freeze_time(repo: Path) -> None:
-    records = freeze_all(repo)
+def test_a_bare_date_is_not_a_freeze_time(repo: Path, freeze_log: FreezeLogWriter) -> None:
+    records = freeze_log.freezes()
     records[0]["frozen_at"] = "2026-11-20"
-    write_freeze_log(repo, records)
+    freeze_log.write(records, chain=False)
     assert "FREEZE_LOG.yaml is malformed" in check_freeze_log(repo).problems[0]
 
 
-def test_an_unblinding_record_before_all_six_are_frozen_fails_a2(repo: Path) -> None:
-    write_freeze_log(repo, freeze_all(repo, but=("everything",)),
-                     unblinding={"recorded_at": "2026-12-01T10:00:00Z"})
+def test_an_unblinding_record_before_all_six_are_frozen_fails_a2(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(but=("everything",)), freeze_log.unblinding()])
     assert check_freeze_log(repo).problems == (
-        "unblinding record: defenses not frozen: everything",)
+        "test_screen unblinding record: defenses not frozen: everything",)
     state = blinding_state(repo)
     assert not state.unblinded and "refused" in state.reason
 
 
-def test_an_unblinding_record_dated_before_a_freeze_fails_a2(repo: Path) -> None:
-    write_freeze_log(repo, freeze_all(repo, at="2026-12-05T00:00:00Z"),
-                     unblinding={"recorded_at": "2026-12-01T10:00:00Z"})
-    assert "defenses frozen after the record" in check_freeze_log(repo).problems[0]
+def test_an_unblinding_record_dated_before_a_freeze_fails_a2(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(at="2026-12-05T00:00:00Z"), freeze_log.unblinding()])
+    problems = check_freeze_log(repo).problems
+    assert any("is dated before entry" in p for p in problems)  # the chain's order, too
+    assert any("defenses frozen after the record" in p for p in problems)
     assert not blinding_state(repo).unblinded
 
 
-def test_a_valid_unblinding_record_unblinds(repo: Path) -> None:
+def test_a_valid_unblinding_record_unblinds(repo: Path, freeze_log: FreezeLogWriter) -> None:
     assert not blinding_state(repo).unblinded  # no freeze log
-    write_freeze_log(repo, freeze_all(repo))
-    assert blinding_state(repo).reason == "FREEZE_LOG.yaml has no unblinding record"
-    write_freeze_log(repo, freeze_all(repo), unblinding={"recorded_at": "2026-12-01T10:00:00Z"})
+    freeze_log.write(freeze_log.freezes())
+    assert blinding_state(repo).reason == "FREEZE_LOG.yaml has no test_screen unblinding record"
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     assert blinding_state(repo).unblinded and check_freeze_log(repo).ok
 
 
-def test_a_frozen_config_edited_after_the_record_re_blinds(repo: Path) -> None:
-    write_freeze_log(repo, freeze_all(repo), unblinding={"recorded_at": "2026-12-01T10:00:00Z"})
+def test_a_frozen_config_edited_after_the_record_re_blinds(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     (repo / "configs/defenses/detection.yaml").write_text("changed\n", encoding="utf-8")
     assert not blinding_state(repo).unblinded
 
 
-def test_a_judge_registered_below_kappa_0_6_fails(repo: Path) -> None:
-    write_freeze_log(repo, [], judge={"registered_at": "2026-12-02T10:00:00Z",
-                                      "code_sha256": "1" * 64, "labels_sha256": "2" * 64,
-                                      "kappa": 0.59})
+def test_a_judge_registered_below_kappa_0_6_fails(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([freeze_log.judge(kappa=0.59)])
     assert "below 0.6" in check_freeze_log(repo).problems[0]
+
+
+# --- the hash chain ----------------------------------------------------------------------------
+
+
+def valid_log(freeze_log: FreezeLogWriter) -> list[dict[str, object]]:
+    return [*freeze_log.freezes(), freeze_log.unblinding(), freeze_log.judge()]
+
+
+def rewrite(repo: Path, change: Callable[[list[dict[str, Any]]], None]) -> None:
+    """Edit the entries of the written log in place, without re-chaining: a tamper."""
+    path = repo / "FREEZE_LOG.yaml"
+    body = yaml.safe_load(path.read_text(encoding="utf-8"))
+    change(body["entries"])
+    path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
+
+
+def test_a_chained_log_passes_and_the_first_entry_is_genesis(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(valid_log(freeze_log))
+    assert check_freeze_log(repo).ok
+    entries = yaml.safe_load((repo / "FREEZE_LOG.yaml").read_text(encoding="utf-8"))["entries"]
+    assert entries[0]["prev"] == "genesis"
+    assert all(len(e["prev"]) == 64 for e in entries[1:])
+
+
+def test_editing_an_earlier_entry_breaks_the_chain(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(valid_log(freeze_log))
+
+    def change(entries: list[dict[str, Any]]) -> None:
+        entries[1]["frozen_at"] = "2026-11-19T09:00:00Z"  # backdated by a day
+
+    rewrite(repo, change)
+    problems = check_freeze_log(repo).problems
+    broken = [p for p in problems if p.startswith("entry 3 (freeze): prev is ")]
+    assert len(broken) == 1 and "edited, removed or reordered" in broken[0]
+    state = blinding_state(repo)
+    assert not state.unblinded and "chain is broken" in state.reason
+
+
+def test_deleting_an_earlier_entry_breaks_the_chain(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(valid_log(freeze_log))
+    rewrite(repo, lambda entries: entries.pop(2))
+    problems = check_freeze_log(repo).problems
+    assert any(p.startswith("entry 3 (freeze): prev is ") for p in problems)
+
+
+def test_reordering_entries_breaks_the_chain(repo: Path, freeze_log: FreezeLogWriter) -> None:
+    freeze_log.write(valid_log(freeze_log))
+
+    def change(entries: list[dict[str, Any]]) -> None:
+        entries[1], entries[2] = entries[2], entries[1]
+
+    rewrite(repo, change)
+    assert not check_freeze_log(repo).ok
+
+
+def test_editing_the_first_entry_is_caught_by_the_second(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(valid_log(freeze_log))
+
+    def change(entries: list[dict[str, Any]]) -> None:
+        entries[0]["defense"] = "detection"  # still a valid-looking entry on its own
+        entries[0]["config"] = "configs/defenses/detection.yaml"
+
+    rewrite(repo, change)
+    assert any(p.startswith("entry 2 (freeze): prev is ") for p in check_freeze_log(repo).problems)
+
+
+def test_a_wrong_first_prev_is_caught(repo: Path, freeze_log: FreezeLogWriter) -> None:
+    freeze_log.write(valid_log(freeze_log))
+    rewrite(repo, lambda entries: entries[0].update(prev="b" * 64))
+    assert check_freeze_log(repo).problems[0].startswith("entry 1 (freeze): prev is ")
+
+
+def test_the_chain_does_not_depend_on_how_the_yaml_is_written(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(valid_log(freeze_log))
+    path = repo / "FREEZE_LOG.yaml"
+    body = yaml.safe_load(path.read_text(encoding="utf-8"))
+    path.write_text(yaml.safe_dump(body, sort_keys=True, default_flow_style=True),
+                    encoding="utf-8")
+    assert check_freeze_log(repo).ok  # reformatted, same content
+
+
+def test_the_last_entry_is_the_one_the_chain_cannot_vouch_for(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    """Documented limit: nothing follows the last entry, so editing it is for git to show."""
+    freeze_log.write(valid_log(freeze_log))
+    rewrite(repo, lambda entries: entries[-1].update(kappa=0.9))
+    assert check_freeze_log(repo).ok
+
+
+# --- the M6 confirmation record ---------------
+
+
+def test_a_confirmation_after_the_screen_unblinding_is_valid(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(freeze_log.full())
+    assert check_freeze_log(repo).ok
+    assert confirmation_state(repo) == (True, "")
+
+
+def test_a_confirmation_before_the_screen_unblinding_is_refused(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.confirmation(at="2026-11-25T00:00:00Z"),
+                      freeze_log.unblinding()])
+    assert any(p.startswith("confirmation: ") for p in check_freeze_log(repo).problems)
+    assert not confirmation_state(repo)[0]
+
+
+def test_a_confirmation_without_any_unblinding_is_refused(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.confirmation()])
+    assert not confirmation_state(repo)[0]
+    assert "not validly unblinded" in confirmation_state(repo)[1]
+
+
+def test_a_changed_selection_file_voids_the_confirmation(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write(freeze_log.full())
+    (repo / "configs/m6_selection.yaml").write_text("confirm: [t3]\n", encoding="utf-8")
+    assert "changed after it was registered" in " ".join(check_freeze_log(repo).problems)
+    assert not confirmation_state(repo)[0]
+
+
+def test_a_confirm_unblinding_needs_the_confirmation_first(
+    repo: Path, freeze_log: FreezeLogWriter
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding(),
+                      freeze_log.unblinding(at="2026-12-09T00:00:00Z", scope="test_confirm")])
+    assert "there is no confirmation registration" in " ".join(check_freeze_log(repo).problems)
+    assert not blinding_state(repo, "test_confirm").unblinded
+    freeze_log.write([*freeze_log.full(),
+                      freeze_log.unblinding(at="2026-12-20T00:00:00Z", scope="test_confirm")])
+    assert check_freeze_log(repo).ok
+    assert blinding_state(repo, "test_confirm").unblinded
 
 
 # --- A3, A9: schema and strata ------------------------------------------------------------------

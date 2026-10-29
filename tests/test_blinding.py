@@ -18,7 +18,6 @@ from lab import cli
 from lab.cli import blind_text, main
 from lab.models.providers import load_providers
 from lab.rules import PROJECT_ROOT
-from lab.rules.prereg import DEFENSES
 from lab.rules.scope import load_split_data
 from lab.store import RunStore
 
@@ -65,25 +64,9 @@ def report(store_path: Path, *args: str, capsys: pytest.CaptureFixture[str]) -> 
     return capsys.readouterr().out
 
 
-def write_freeze_log(repo: Path, frozen: tuple[str, ...], unblinding: str | None) -> None:
-    freezes = []
-    for defense in frozen:
-        rel = f"configs/defenses/{defense}.yaml"
-        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-        (repo / rel).write_text(f"defense: {defense}\n", encoding="utf-8", newline="\n")
-        import hashlib
-
-        freezes.append({"defense": defense, "config": rel, "frozen_at": "2026-11-20T09:00:00Z",
-                        "sha256": hashlib.sha256((repo / rel).read_bytes()).hexdigest()})
-    body: dict[str, Any] = {"freezes": freezes}
-    if unblinding is not None:
-        body["unblinding"] = {"recorded_at": unblinding}
-    (repo / "FREEZE_LOG.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
-
-
-def views(store_path: Path) -> list[tuple[str, str, int]]:
+def views(store_path: Path) -> list[tuple[str, str, str, int]]:
     with sqlite3.connect(store_path) as db:
-        return db.execute("SELECT command, detail, test_screen_runs FROM outcome_views "
+        return db.execute("SELECT command, detail, scope, runs FROM outcome_views "
                           "ORDER BY id").fetchall()
 
 
@@ -131,13 +114,14 @@ def test_a_mixed_report_hides_the_screen_runs_and_keeps_the_rest(
     assert "Runs stored: 4 (" in out  # the count covers every run, hidden ones too
 
 
-def test_a_test_confirm_run_is_not_a_test_screen_run(
+def test_test_confirm_outcomes_are_blinded_like_test_screen_ones(
     store_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Test-confirm is not test-screen, so the blinding rule of D103 does not name it; it is
-    shown like any run. (D90 keeps it untouched until M6 by the plan, not by this switch.)"""
     out = report(store_path, "confirm", capsys=capsys)
-    assert "Blinded" not in out and "ASR" in out
+    assert "Blinded (D103): 2 run(s)" in out and "test-confirm" in out
+    for word in OUTCOME_WORDS:
+        assert word not in out, word
+    assert views(store_path) == []
 
 
 def test_the_blind_text_has_no_rate_built_from_an_outcome(
@@ -159,18 +143,48 @@ def test_the_blind_text_has_no_rate_built_from_an_outcome(
 
 
 def test_a_valid_unblinding_record_shows_the_outcomes_and_logs_the_view(
-    store_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_freeze_log(repo, DEFENSES, "2026-12-01T10:00:00Z")
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     out = report(store_path, "screen", capsys=capsys)
     assert "Blinded" not in out and "ASR" in out and "attacker effect" in out
-    assert views(store_path) == [("report", "screen", 2)]
+    assert views(store_path) == [("report", "screen", "test_screen", 2)]
+
+
+def test_the_screen_unblinding_does_not_unblind_test_confirm(
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
+    out = report(store_path, "confirm", capsys=capsys)
+    assert "Blinded" in out and "ASR" not in out
+    assert "no test_confirm unblinding record" in out
+
+
+def test_a_confirm_unblinding_record_shows_test_confirm_outcomes_and_logs_the_view(
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    freeze_log.write([*freeze_log.full(),
+                      freeze_log.unblinding(at="2026-12-20T00:00:00Z", scope="test_confirm")])
+    out = report(store_path, "confirm", "screen", capsys=capsys)
+    assert "Blinded" not in out and "ASR" in out
+    assert views(store_path) == [("report", "confirm, screen", "test_screen", 2),
+                                 ("report", "confirm, screen", "test_confirm", 2)]
+
+
+def test_a_confirm_unblinding_without_a_valid_confirmation_is_refused(
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding(),
+                      freeze_log.unblinding(at="2026-12-20T00:00:00Z", scope="test_confirm")])
+    out = report(store_path, "confirm", capsys=capsys)
+    assert "Blinded" in out and "ASR" not in out and "refused" in out
+    assert views(store_path) == []
 
 
 def test_unblinding_before_all_six_defenses_are_frozen_is_refused(
-    store_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_freeze_log(repo, DEFENSES[:-1], "2026-12-01T10:00:00Z")
+    freeze_log.write([*freeze_log.freezes(but=("everything",)), freeze_log.unblinding()])
     out = report(store_path, "screen", capsys=capsys)
     assert "refused (defenses not frozen: everything)" in out
     for word in OUTCOME_WORDS:
@@ -179,9 +193,9 @@ def test_unblinding_before_all_six_defenses_are_frozen_is_refused(
 
 
 def test_blind_still_hides_after_the_unblinding_record(
-    store_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write_freeze_log(repo, DEFENSES, "2026-12-01T10:00:00Z")
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     out = report(store_path, "screen", "--blind", capsys=capsys)
     assert "Blinded" in out and "ASR" not in out
     assert views(store_path) == []
@@ -199,17 +213,31 @@ def run_id_of(store_path: Path, experiment: str) -> str:
 
 
 def test_trace_refuses_a_blinded_test_screen_run_and_shows_it_once_unblinded(
-    store_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     run_id = run_id_of(store_path, "screen")
     capsys.readouterr()
     assert main(["trace", run_id[:12], "--store", str(store_path)]) == 1
     captured = capsys.readouterr()
     assert "stays blinded" in captured.err and captured.out == ""
-    write_freeze_log(repo, DEFENSES, "2026-12-01T10:00:00Z")
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
     assert main(["trace", run_id[:12], "--store", str(store_path)]) == 0
     assert capsys.readouterr().out
-    assert views(store_path) == [("trace", run_id, 1)]
+    assert views(store_path) == [("trace", run_id, "test_screen", 1)]
+
+
+def test_trace_refuses_a_blinded_test_confirm_run_until_its_own_record(
+    store_path: Path, freeze_log: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_id = run_id_of(store_path, "confirm")
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
+    capsys.readouterr()
+    assert main(["trace", run_id[:12], "--store", str(store_path)]) == 1
+    assert "test-confirm run" in capsys.readouterr().err
+    freeze_log.write([*freeze_log.full(),
+                      freeze_log.unblinding(at="2026-12-20T00:00:00Z", scope="test_confirm")])
+    assert main(["trace", run_id[:12], "--store", str(store_path)]) == 0
+    assert views(store_path) == [("trace", run_id, "test_confirm", 1)]
 
 
 def test_trace_shows_a_dev_run_without_logging(

@@ -32,10 +32,13 @@ SPLIT = load_split_data(PROJECT_ROOT)
 DEV_CASE = "banking:plain_instruction:unauthorized_action:r0"
 TEST_CASE = next(i for i in SPLIT.test_screen if "important_instructions" in i)
 assert SPLIT.split_of[DEV_CASE] == "dev" and SPLIT.split_of[TEST_CASE] == "test"
+CONFIRM_CASE = next(i for i, s in SPLIT.split_of.items()
+                    if s == "test" and i not in SPLIT.test_screen
+                    and "important_instructions" in i)
 DEV_PAIR = ("user_task_2", "injection_task_4")  # D84, dev
-TEST_PAIR = ("user_task_3", "injection_task_7")
+TEST_PAIR = ("user_task_3", "injection_task_7")  # test-confirm
 assert SPLIT.split_of[baseline_case_id(*DEV_PAIR)] == "dev"
-assert SPLIT.split_of[baseline_case_id(*TEST_PAIR)] == "test"
+assert SPLIT.is_test_confirm(baseline_case_id(*TEST_PAIR))
 
 
 def experiment(name: str = "guarded", **overrides: Any) -> dict[str, Any]:
@@ -79,7 +82,6 @@ def test_a_dev_case_experiment_passes_untouched_even_without_a_prereg(tmp_path: 
     [TEST_CASE],
     [DEV_CASE, TEST_CASE],  # one test case among dev cases refuses the whole experiment
     "test_screen",
-    "banking_v1",  # every case, test ones included
     "repeat",
 ])
 def test_an_experiment_with_a_test_case_is_refused_without_a_prereg(
@@ -97,10 +99,59 @@ def test_an_attack_config_is_judged_by_the_split_of_its_pairs(tmp_path: Path) ->
         return experiment(cases=None, include_benign=True, user_tasks=[pair[0]],
                           attack={"injection_tasks": [pair[1]]})
 
-    dev, test = attack(DEV_PAIR), attack(TEST_PAIR)
+    screen_pair = tuple(TEST_CASE.split(":")[2:4])
+    dev, screen, confirm = attack(DEV_PAIR), attack(screen_pair), attack(TEST_PAIR)  # type: ignore[arg-type]
     assert check_run(config_of(dev), write(tmp_path / "d.yaml", dev), PROJECT_ROOT) is None
     with pytest.raises(ConfigError, match="contains test-split cases"):
-        check_run(config_of(test), write(tmp_path / "t.yaml", test), PROJECT_ROOT)
+        check_run(config_of(screen), write(tmp_path / "s.yaml", screen), PROJECT_ROOT)
+    with pytest.raises(ConfigError, match="contains test-confirm cases"):
+        check_run(config_of(confirm), write(tmp_path / "c.yaml", confirm), PROJECT_ROOT)
+
+
+@pytest.mark.parametrize("cases", [[CONFIRM_CASE], [TEST_CASE, CONFIRM_CASE], "banking_v1"])
+def test_test_confirm_cases_are_refused_until_the_confirmation_record(
+    repo: Path, tmp_path: Path, freeze_log: Any, cached_group_a: Callable[[Path], list[Check]],
+    cases: object,
+) -> None:
+    """Group A passes and the freeze log has the six freezes and the test-screen unblinding, which
+    is all test-screen runs need; test-confirm cases still need the M6 registration."""
+    freeze_log.write([*freeze_log.freezes(), freeze_log.unblinding()])
+    body = experiment(cases=cases)
+    config = write(tmp_path / "c.yaml", body)
+    with pytest.raises(ConfigError, match=r"contains test-confirm cases.*no confirmation"):
+        check_run(config_of(body), config, repo)
+    freeze_log.write(freeze_log.full())
+    assert check_run(config_of(body), config, repo) == prereg_sha256(repo)
+
+
+def test_test_screen_cases_do_not_need_the_confirmation_record(
+    repo: Path, tmp_path: Path, cached_group_a: Callable[[Path], list[Check]]
+) -> None:
+    body = experiment(cases="test_screen")  # no freeze log at all
+    assert check_run(config_of(body), write(tmp_path / "s.yaml", body), repo) == (
+        prereg_sha256(repo))
+
+
+def test_a_broken_confirmation_keeps_test_confirm_refused(
+    repo: Path, tmp_path: Path, freeze_log: Any
+) -> None:
+    freeze_log.write(freeze_log.full())
+    (repo / "configs/m6_selection.yaml").write_text("confirm: [t3]\n", encoding="utf-8")
+    body = experiment(cases=[CONFIRM_CASE])
+    with pytest.raises(ConfigError, match="changed after it was registered"):
+        check_run(config_of(body), write(tmp_path / "c.yaml", body), repo)
+
+
+def test_a_broken_chain_keeps_test_confirm_refused(
+    repo: Path, tmp_path: Path, freeze_log: Any
+) -> None:
+    path = freeze_log.write(freeze_log.full())
+    path.write_text(path.read_text(encoding="utf-8").replace("2026-11-20T09:00:00Z",
+                                                            "2026-11-19T09:00:00Z", 1),
+                    encoding="utf-8")
+    body = experiment(cases=[CONFIRM_CASE])
+    with pytest.raises(ConfigError, match="chain is broken"):
+        check_run(config_of(body), write(tmp_path / "c.yaml", body), repo)
 
 
 def test_every_checked_in_experiment_config_is_dev_only_or_benign() -> None:
@@ -210,13 +261,12 @@ def spec(**fields: Any) -> RunSpec:
     return RunSpec(**(base | fields))
 
 
-def test_the_default_leaves_the_run_id_alone_and_a_hash_changes_it() -> None:
+def test_the_prereg_hash_is_recorded_but_never_part_of_the_run_id() -> None:
     plain = spec()
     assert plain.prereg_sha256 is None
     stamped = spec(prereg_sha256="a" * 64)
-    assert stamped.run_id != plain.run_id
-    assert spec(prereg_sha256="b" * 64).run_id != stamped.run_id
-    assert spec(prereg_sha256="a" * 64).run_id == stamped.run_id
+    assert stamped.prereg_sha256 == "a" * 64
+    assert stamped.run_id == plain.run_id == spec(prereg_sha256="b" * 64).run_id
 
 
 def test_a_malformed_prereg_hash_is_refused() -> None:
@@ -225,15 +275,16 @@ def test_a_malformed_prereg_hash_is_refused() -> None:
             spec(prereg_sha256=bad)
 
 
-def test_expand_stamps_every_spec_or_none_and_the_default_ids_are_the_old_ones() -> None:
+def test_expand_stamps_every_spec_and_an_amendment_changes_no_run_id() -> None:
     config = config_of(experiment(cases=[DEV_CASE, "banking:fake_authority:sabotage:r1"]))
     plain = expand(config, load_providers())
-    stamped = expand(config, load_providers(), prereg_sha256="c" * 64)
+    version_1 = expand(config, load_providers(), prereg_sha256="c" * 64)
+    version_2 = expand(config, load_providers(), prereg_sha256="d" * 64)  # after an amendment
     assert all(s.prereg_sha256 is None for s in plain)
-    assert all(s.prereg_sha256 == "c" * 64 for s in stamped)
-    assert all(a.run_id != b.run_id for a, b in zip(plain, stamped, strict=True))
-    unstamped = [s.model_copy(update={"prereg_sha256": None}) for s in stamped]
-    assert [s.run_id for s in unstamped] == [s.run_id for s in plain]
+    assert all(s.prereg_sha256 == "c" * 64 for s in version_1)
+    assert all(s.prereg_sha256 == "d" * 64 for s in version_2)
+    assert [s.run_id for s in plain] == [s.run_id for s in version_1] == [
+        s.run_id for s in version_2]
 
 
 # --- `lab run` end to end -----------------------------------------------------------------------
@@ -285,12 +336,67 @@ def test_lab_run_stamps_a_test_case_run_once_group_a_passes(
         (run_id,) = store.run_ids("m4_like")
         record = store.get_run(run_id)
         assert record.spec.prereg_sha256 == hash_ and record.spec.case_id == TEST_CASE
-        assert run_id == expand(config_of(body), load_providers(), prereg_sha256=hash_)[0].run_id
-        assert run_id != expand(config_of(body), load_providers())[0].run_id
+        assert run_id == expand(config_of(body), load_providers())[0].run_id  # not in the ID
     finally:
         store.close()
     with sqlite3.connect(tmp_path / "runs.sqlite") as db:
         assert db.execute("SELECT prereg_sha256 FROM runs").fetchall() == [(hash_,)]
-    # Resumable: the same command again finds the run by its stamped ID and runs nothing.
+    # Resumable: the same command again finds the run by its ID and runs nothing.
     assert main(["run", str(config), *run_args(tmp_path)]) == 0
     assert "0 to go" in capsys.readouterr().out
+
+
+def test_an_amendment_between_two_invocations_neither_reruns_nor_restamps(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    cached_group_a: Callable[[Path], list[Check]], write_prereg: WritePrereg,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The prereg is amended (appended to, so its hash changes) while a sweep is half done. The
+    runs already stored keep the hash of the version they ran under and are not run again; the
+    rest are stamped with the new version."""
+    monkeypatch.setattr(cli, "PROJECT_ROOT", repo)
+    first = TEST_CASE
+    second = next(i for i in sorted(SPLIT.test_screen) if i != first)
+    config = write(tmp_path / "t.yaml", experiment("sweep", cases=[first]))
+    assert main(["run", str(config), *run_args(tmp_path)]) == 0
+    version_1 = prereg_sha256(repo)
+    write_prereg(repo, text_after="\n## Amendment 1 (dated)\n")
+    version_2 = prereg_sha256(repo)
+    assert version_1 != version_2
+    write(config, experiment("sweep", cases=[first, second]))
+    capsys.readouterr()
+    assert main(["run", str(config), *run_args(tmp_path)]) == 0
+    assert "1 already done, 1 to go" in capsys.readouterr().out
+    store = RunStore(tmp_path / "runs.sqlite")
+    try:
+        stamped = {r.spec.case_id: r.spec.prereg_sha256 for r in store.runs("sweep")}
+    finally:
+        store.close()
+    assert stamped == {first: version_1, second: version_2}
+
+
+# --- no way around the guard from `lab run` ------------------------------------------------------
+
+
+def test_there_is_no_flag_environment_variable_or_config_field_that_skips_the_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`no_guard` is a pytest fixture in tests/conftest.py and nothing else: it patches the name
+    `check_run` inside `lab.cli` for one test. Nothing under lab/ mentions it, `lab run` has no
+    option for it, and neither the environment, the .env file nor the config can switch it."""
+    lab_dir = PROJECT_ROOT / "lab"
+    for path in lab_dir.rglob("*.py"):
+        text = path.read_text(encoding="utf-8").lower()
+        assert "no_guard" not in text and "noguard" not in text and "skip_guard" not in text, path
+    for variable in ("LAB_NO_GUARD", "NO_GUARD", "LAB_SKIP_GUARD"):
+        monkeypatch.setenv(variable, "1")
+    (tmp_path / "x.env").write_text("LAB_NO_GUARD=1\nNO_GUARD=true\n", encoding="utf-8")
+    config = write(tmp_path / "t.yaml", experiment(cases=[TEST_CASE]))
+    args = [*run_args(tmp_path)[:-1], str(tmp_path / "x.env")]
+    assert main(["run", str(config), *args]) == 2
+    assert "contains test-split cases" in capsys.readouterr().err
+    assert not (tmp_path / "runs.sqlite").exists()
+    with pytest.raises(SystemExit):  # an option that does not exist
+        main(["run", str(config), "--no-guard"])
+    with pytest.raises(ValueError, match="no_guard"):  # a field that does not exist
+        config_of(experiment(cases=[TEST_CASE]) | {"no_guard": True})

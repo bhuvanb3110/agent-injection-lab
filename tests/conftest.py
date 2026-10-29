@@ -184,3 +184,66 @@ def repo(tmp_path: Path, write_prereg: WritePrereg) -> Path:
         shutil.copyfile(PROJECT / file, root / file)
     write_prereg(root)
     return root
+
+
+class FreezeLogWriter:
+    """Writes `<root>/FREEZE_LOG.yaml` as a hash chain (lab.rules.prereg.link). The methods that
+    make entries return plain dicts, so a test can edit one before `write` chains them."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def _file(self, rel: str, text: str) -> str:
+        import hashlib
+
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def freezes(self, but: tuple[str, ...] = (), at: str = "2026-11-20T09:00:00Z"
+                ) -> list[dict[str, object]]:
+        """Six defense configs written under configs/defenses/, and a freeze entry for each but
+        those named in `but` (whose files exist, unfrozen)."""
+        from lab.rules.prereg import DEFENSES
+
+        entries: list[dict[str, object]] = []
+        for defense in DEFENSES:
+            rel = f"configs/defenses/{defense}.yaml"
+            digest = self._file(rel, f"defense: {defense}\n")
+            if defense not in but:
+                entries.append({"kind": "freeze", "defense": defense, "config": rel,
+                                "sha256": digest, "frozen_at": at})
+        return entries
+
+    def unblinding(self, at: str = "2026-12-01T10:00:00Z", scope: str = "test_screen"
+                   ) -> dict[str, object]:
+        return {"kind": "unblinding", "scope": scope, "recorded_at": at}
+
+    def confirmation(self, at: str = "2026-12-10T10:00:00Z") -> dict[str, object]:
+        digest = self._file("configs/m6_selection.yaml", "confirm: [t1, t2]\n")
+        return {"kind": "confirmation", "registered_at": at,
+                "selection": "configs/m6_selection.yaml", "selection_sha256": digest}
+
+    def judge(self, at: str = "2026-12-02T10:00:00Z", kappa: float = 0.7) -> dict[str, object]:
+        return {"kind": "judge", "registered_at": at, "code_sha256": "1" * 64,
+                "labels_sha256": "2" * 64, "kappa": kappa}
+
+    def full(self) -> list[dict[str, object]]:
+        """Everything up to and including the M6 confirmation registration."""
+        return [*self.freezes(), self.unblinding(), self.confirmation()]
+
+    def write(self, entries: list[dict[str, object]], chain: bool = True) -> Path:
+        import yaml
+
+        from lab.rules.prereg import link
+
+        path = self.root / "FREEZE_LOG.yaml"
+        body = {"entries": link(entries) if chain else entries}
+        path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8", newline="\n")
+        return path
+
+
+@pytest.fixture
+def freeze_log(repo: Path) -> FreezeLogWriter:
+    return FreezeLogWriter(repo)
