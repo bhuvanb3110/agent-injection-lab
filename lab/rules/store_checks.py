@@ -1,5 +1,5 @@
 """`lab validate-rules --store`, group B: the checks that read the run store (PLAN_M3 §5, D102,
-D116). Local only: the store is not committed, so CI cannot run them.
+D117). Local only: the store is not committed, so CI cannot run them.
 
 | Check | Fails when |
 |---|---|

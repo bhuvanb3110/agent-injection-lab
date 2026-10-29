@@ -15,7 +15,7 @@ Tables (DECISIONS.md D2, D25, D51):
   limiter reads it back on start-up so daily usage survives a restart.
 - `outcome_views`: one row each time `lab report` or `lab trace` showed the outcomes of
   test-screen runs, with the time. `lab validate-rules --store` checks that none is earlier than
-  the unblinding record (D103, D116). Nothing is written for any other view.
+  the unblinding record (D103, D117). Nothing is written for any other view.
 
 Rows are only inserted, never updated: a run ID that is already present is a bug, not a retry.
 The one exception is a run's failure label, an annotation added after scoring (D43).

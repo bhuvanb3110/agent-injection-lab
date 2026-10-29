@@ -1,4 +1,4 @@
-"""PREREGISTRATION.md's machine-readable blocks, and the freeze log (D102, D103, D106, D116).
+"""PREREGISTRATION.md's machine-readable blocks, and the freeze log (D102, D103, D106, D117).
 
 The file formats are in docs/PREREG_FORMAT.md; this module is what reads them. Step 11 writes
 PREREGISTRATION.md; nothing here writes it.

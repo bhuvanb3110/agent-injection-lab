@@ -1,5 +1,5 @@
 """`lab report --blind`, the blinding of test-screen outcomes, and `lab report` grouping runs by
-case (PLAN_M3 step 10, D103, D116). FakeModels only, no network.
+case (PLAN_M3 step 10, D103, D117). FakeModels only, no network.
 
 Runs of test-split cases are made with the guard switched off (`no_guard`), which is how a test
 store gets them; what these tests are about is what `lab report` and `lab trace` then show.

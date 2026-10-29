@@ -161,7 +161,7 @@ def listed_cases(config: ExperimentConfig, case_set: CaseSet) -> list[AttackCase
 
     Which split a case is in is not decided here. A list with test-split cases is expanded like
     any other; `lab run` refuses it unless `validate-rules` group A passes (lab.rules.guard,
-    D102, D116). Unknown and repeated IDs are errors: a repeated one would make two identical
+    D102, D117). Unknown and repeated IDs are errors: a repeated one would make two identical
     run IDs, and the second would be silently skipped.
     """
     ids = config.cases

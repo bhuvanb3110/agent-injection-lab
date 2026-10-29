@@ -1,4 +1,4 @@
-"""The `lab run` guard and `prereg_sha256` (PLAN_M3 step 10, D102, D116).
+"""The `lab run` guard and `prereg_sha256` (PLAN_M3 step 10, D102, D117).
 
 `lab run` refuses an experiment with test-split cases unless group A passes, and an absent
 PREREGISTRATION.md fails group A. Dev-case experiments pass through untouched. FakeModels only.

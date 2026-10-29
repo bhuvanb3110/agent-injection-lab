@@ -1,4 +1,4 @@
-# File formats for the preregistration (PLAN_M3 step 10, D116)
+# File formats for the preregistration (PLAN_M3 step 10, D117)
 
 What step 11 must write so that `lab validate-rules` can read it. The code that reads these files is `lab/rules/prereg.py`; the checks are in `lab/rules/checks.py` (group A) and `lab/rules/store_checks.py` (group B). Nothing here writes `PREREGISTRATION.md`.
 

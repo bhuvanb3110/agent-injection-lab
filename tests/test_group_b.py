@@ -1,4 +1,4 @@
-"""`lab validate-rules --store`, group B (PLAN_M3 step 10, D102, D116).
+"""`lab validate-rules --store`, group B (PLAN_M3 step 10, D102, D117).
 
 Each check is run on a small store built for the test: D89's re-checks of the hand-validated
 rules, and the order in which things were registered, run and viewed. No network, no model.

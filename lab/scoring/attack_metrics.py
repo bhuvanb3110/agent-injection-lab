@@ -222,7 +222,7 @@ def case_mean(cases: Sequence[Sequence[bool]], *, resamples: int = BOOTSTRAP_RES
 
 # (user task, injection task or None, case ID or None). A run built from a dataset case is its
 # case: two cases on one (user task, injection task) pair are two cases, each with its own
-# repeats (PLAN_M3 step 10, D116). A run without a case ID (a benign control, or milestone 2's
+# repeats (PLAN_M3 step 10, D117). A run without a case ID (a benign control, or milestone 2's
 # attack runs) is grouped as before, by its pair.
 Case = tuple[str, str | None, str | None]
 

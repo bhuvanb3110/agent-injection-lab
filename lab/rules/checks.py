@@ -1,5 +1,5 @@
 """`lab validate-rules`, group A: the checks that need no run store and run in CI (PLAN_M3 §5,
-D102, D116).
+D102, D117).
 
 Every check takes the repository root and returns a `Check`: its name, and one message per
 problem. A check never raises for a problem with the repository's files: a missing, tampered or

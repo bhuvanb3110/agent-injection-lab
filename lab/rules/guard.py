@@ -1,4 +1,4 @@
-"""What `lab run` refuses, and what `lab report` and `lab trace` may show (D102, D103, D116).
+"""What `lab run` refuses, and what `lab report` and `lab trace` may show (D102, D103, D117).
 
 **The guard.** `check_run` is called by `lab run` before anything is built. An experiment is
 *registered* if it contains a test-split case, or if it has no attack case at all and its config

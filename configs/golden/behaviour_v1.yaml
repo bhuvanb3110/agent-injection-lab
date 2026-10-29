@@ -1,4 +1,4 @@
-# Golden behaviour fixtures (PLAN_M3 §5 group A item 7, D102, D116). Read by lab/rules/golden.py.
+# Golden behaviour fixtures (PLAN_M3 §5 group A item 7, D102, D117). Read by lab/rules/golden.py.
 #
 # Each table is (input, the answer the rule was frozen with). `lab validate-rules` runs the
 # current code on every input, so a rule that changes behaviour fails group A, and a refactor

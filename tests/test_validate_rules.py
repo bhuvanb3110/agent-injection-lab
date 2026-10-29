@@ -1,4 +1,4 @@
-"""`lab validate-rules`, group A (PLAN_M3 step 10, D102, D116).
+"""`lab validate-rules`, group A (PLAN_M3 step 10, D102, D117).
 
 Each test builds a fixture repository (tests/conftest.py: a copy of the files group A reads, with
 a PREREGISTRATION.md that pins them), breaks one thing, and expects exactly the check for it to

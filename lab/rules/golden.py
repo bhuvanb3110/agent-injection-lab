@@ -1,4 +1,4 @@
-"""The golden behaviour fixtures (PLAN_M3 §5 group A item 7, D102, D116).
+"""The golden behaviour fixtures (PLAN_M3 §5 group A item 7, D102, D117).
 
 Rules that live in code are pinned by what they do, not by their source (D102), so an unrelated
 refactor raises no alarm and a change of behaviour does. The fixtures are data in

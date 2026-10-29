@@ -1,4 +1,4 @@
-"""`lab validate-rules`, the `lab run` guard and the blinding rules (PLAN_M3 §5, D102, D103, D116).
+"""`lab validate-rules`, the `lab run` guard and the blinding rules (PLAN_M3 §5, D102, D103, D117).
 
 - `prereg`: the machine-readable parts of PREREGISTRATION.md (the pin block) and the freeze log.
 - `scope`: which attack cases, and which split, an experiment or a stored run belongs to.
