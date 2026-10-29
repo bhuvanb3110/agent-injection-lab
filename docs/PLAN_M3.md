@@ -382,7 +382,7 @@ Null results are reported with these thresholds.
 | 5 | Tool-description channel; multi-hop's two-vector placement in T1–T5-summary; hop-0 schema source | Sonnet | payload only in the target schema; benign schemas byte-equal to M2; a multi-hop T2 scripted run crosses workers through the planner |
 | 6 | Domain-generic generator, split and sampling scripts; Banking composition file; data; `KNOWN_ISSUES`; **the step-8 dev configs**; the deterministic-only = T4 spec test | Sonnet | determinism; invariants; composition = §3.5; nesting; no store needed |
 | 8 | **Dev runs, which Bhuvan runs in the terminal (R6). Scope below.** | — | `lab budget` |
-| 10 | `validate-rules`, the CI step, the guard, `prereg_sha256`, `--blind` with the unblinding check | Sonnet | tamper, missing and unpinned files fail; regeneration mismatch fails; the guard blocks; blind mode hides outcomes |
+| 10 | `validate-rules`, the CI step, the guard, `prereg_sha256`, `--blind` with the unblinding check; `lab report` groups case runs by `case_id`, not only by (user task, injection task) (D114, D115) | Sonnet | tamper, missing and unpinned files fail; regeneration mismatch fails; the guard blocks; blind mode hides outcomes |
 | 11 | `PREREGISTRATION.md`, rubric v1, M4 configs, pins (with Bhuvan) | Sonnet | group A green in CI = **gate** |
 | 12 | README, CLAUDE.md commands, DECISIONS, handoff, merge | Haiku | full suite, ruff, mypy |
 | *after the gate* 7 | Judge module (strict JSON, fail-closed), κ, against the pinned rubric v1 | Sonnet | FakeModel verdicts; an unparseable verdict is its own category; κ on known values |
