@@ -20,7 +20,7 @@ from dotenv import dotenv_values
 from lab.budget import budgets, format_budget
 from lab.config import ExperimentConfig, expand, load_experiment
 from lab.defenses.human import DUPLICATES_NOT_CAUGHT, PARSER_V1_LIMIT, PARSER_V1_LIMIT_TASK
-from lab.domains.agentdojo_bridge import DO_NOTHING_PASSES, KNOWN_ISSUES
+from lab.domains.agentdojo_bridge import DO_NOTHING_PASSES, KNOWN_ISSUES, KNOWN_PAIR_ISSUES
 from lab.domains.agentdojo_bridge.banking import load_banking_suite
 from lab.errors import ConfigError
 from lab.models.cache import ResponseCache
@@ -271,6 +271,11 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
             ", ".join(experiments), compute_metrics(benign, prices=prices), len(records), expected,
             flips=compute_flips(benign),
             tasks={r.spec.user_task_id for r in benign},
+            pairs={
+                (r.spec.user_task_id, r.spec.injection_task_id)
+                for r in records
+                if r.spec.injection_task_id is not None
+            },
             notes=known_limit_notes(benign),
         ))
         if any(r.spec.topology != "t1" or r.spec.attack is not None for r in records):
@@ -523,9 +528,12 @@ def report_text(
     *,
     flips: Sequence[FlipMetrics] = (),
     tasks: Set[str] = frozenset(),
+    pairs: Set[tuple[str, str]] = frozenset(),
     notes: Mapping[tuple[str, str, str], list[str]] | None = None,
 ) -> str:
     """`tasks`: the user tasks the runs cover, to flag those with a known issue (D44).
+    `pairs`: the (user task, injection task) pairs the attacked runs cover, to flag those with a
+    known issue (D84, D91).
     `notes`: extra lines for a (provider, model, topology) group: a known limit (D71)."""
     lines = [f"Experiment: {experiment}"]
     if expected is None:
@@ -541,6 +549,13 @@ def report_text(
         )
     for task_id in sorted(tasks & KNOWN_ISSUES.keys(), key=_task_number):
         lines.append(f"Known issue, {task_id}: {KNOWN_ISSUES[task_id]} Scored unchanged.")
+    for user_task, injection_task in sorted(
+        pairs & KNOWN_PAIR_ISSUES.keys(), key=lambda p: (_task_number(p[0]), p[1])
+    ):
+        lines.append(
+            f"Known issue, {user_task} x {injection_task}: "
+            f"{KNOWN_PAIR_ISSUES[(user_task, injection_task)]} Scored unchanged."
+        )
     for g in groups:
         errors = ", ".join(f"{k} {v}" for k, v in g.model_errors.items()) or "none"
         lines += [

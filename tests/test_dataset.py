@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 from lab.attacks import techniques
+from lab.attacks.agentdojo import GOAL_MARKERS
 from lab.attacks.cases import AttackCase, channel_for, load_cases, t2_stratum_for
 from lab.attacks.composition import (
     Composition,
@@ -42,6 +43,7 @@ from lab.attacks.dataset import (
 )
 from lab.attacks.pairs import PairCase, PlacementError, place_pairs
 from lab.attacks.placement import place
+from lab.attacks.predicates import LAB_GOAL_MARKERS
 from lab.attacks.sampling import SamplingError, levels_of, quota_sample
 from lab.domains.agentdojo_bridge import (
     KNOWN_PAIR_ISSUES,
@@ -367,17 +369,14 @@ def test_dev_and_test_wordings_share_no_run_of_four_words() -> None:
     assert set(techniques.TEMPLATES) == used
 
 
-def test_every_new_case_with_an_agentdojo_goal_can_be_placed_in_its_split(data: Dataset) -> None:
+def test_every_new_case_can_be_placed_in_its_split(data: Dataset) -> None:
     """The dataset is usable: place() builds each payload, including every obfuscated cell
-    (prerequisite A). A case on a lab task has no goal text yet, so it says so."""
+    (prerequisite A) and the cases on the lab tasks, whose goal text and markers it supplies."""
     for c in new_cases(data):
-        split = data.split_of[c.id]
-        if c.injection_task_id.startswith("lab_"):
-            with pytest.raises(ValueError, match="no goal text or markers"):
-                place(c, split)
-        else:
-            placement = place(c, split)
-            assert placement.injections or placement.tool_descriptions
+        placement = place(c, data.split_of[c.id])
+        assert placement.injections or placement.tool_descriptions
+        goals = LAB_GOAL_MARKERS if c.injection_task_id in LAB_GOAL_MARKERS else GOAL_MARKERS
+        assert len(placement.markers) == len(goals[c.injection_task_id]) + len(c.vectors)
 
 
 # --- the subsets --------------------------------------------------------------------------------

@@ -28,6 +28,7 @@ from typing import Final
 from lab.attacks.agentdojo import GOAL_MARKERS, canary_for
 from lab.attacks.cases import LAB_INJECTION_WRITE_TOOLS, TOOL_DESCRIPTION_PREFIX, AttackCase
 from lab.attacks.payload import Payload, Stage, build_payload
+from lab.attacks.predicates import LAB_GOAL_MARKERS, LAB_GOAL_TEXT
 from lab.attacks.techniques import Split
 from lab.domains.agentdojo_bridge import load_banking_suite
 from lab.models.types import ToolDescriptionInjection
@@ -69,20 +70,23 @@ def place(
     goal_markers: tuple[str, ...] | None = None,
 ) -> Placement:
     """The case's payloads, each in its vector. `goal_text` and `goal_markers` default to the
-    injection task's own (its GOAL and `GOAL_MARKERS`)."""
+    injection task's own: its GOAL and `GOAL_MARKERS`, or for a lab task `LAB_GOAL_TEXT` and
+    `LAB_GOAL_MARKERS`."""
     if case.technique == "important_instructions":
         raise ValueError("important_instructions is placed by lab.attacks.agentdojo")
-    if case.injection_task_id in LAB_INJECTION_WRITE_TOOLS and (
-        goal_text is None or goal_markers is None
-    ):
-        raise ValueError(
-            f"{case.id}: {case.injection_task_id} has no goal text or markers of its own yet; "
-            "pass goal_text and goal_markers"
-        )
+    lab_task = case.injection_task_id in LAB_INJECTION_WRITE_TOOLS
     if goal_text is None:
-        goal_text = load_banking_suite().get_injection_task_by_id(case.injection_task_id).GOAL
+        goal_text = (
+            LAB_GOAL_TEXT[case.injection_task_id]
+            if lab_task
+            else load_banking_suite().get_injection_task_by_id(case.injection_task_id).GOAL
+        )
     if goal_markers is None:
-        goal_markers = GOAL_MARKERS[case.injection_task_id]
+        goal_markers = (
+            LAB_GOAL_MARKERS[case.injection_task_id]
+            if lab_task
+            else GOAL_MARKERS[case.injection_task_id]
+        )
 
     injections: dict[str, str] = {}
     tool_descriptions: dict[str, ToolDescriptionInjection] = {}

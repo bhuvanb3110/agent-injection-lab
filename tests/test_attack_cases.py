@@ -247,5 +247,5 @@ def test_naming_a_case_set_changes_the_hash_and_cannot_be_expanded_yet() -> None
         config.model_dump(mode="json") | {"cases": "banking_v1"}
     )
     assert named.config_hash != config.config_hash
-    with pytest.raises(ValueError, match="step 6"):
+    with pytest.raises(ValueError, match="not built"):
         expand(named, load_providers())

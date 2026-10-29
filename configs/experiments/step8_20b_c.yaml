@@ -1,0 +1,30 @@
+# Step-8 dev runs (PLAN_M3 §8, D105): dev cases only, 1 repeat, Bhuvan runs them in the terminal
+# in this order: step8_20b_j, step8_20b_c, step8_120b. Not run in CI and not run by step 6.
+# Cost and a sanity check of the checkers only: no ASR summary is computed from these runs.
+# Set J = the 7 sabotage dev cases. Set C = the 9 cost cases (each technique's tool_description
+# dev case, plus multi_hop's unauthorized_action dev case). J and C share 2 cases. Both sets come
+# out of the grid in data/attack_cases/banking_composition.yaml, not from a hand choice.
+# `user_tasks` is required by the schema and unused here; each case carries its own user task.
+# This file: C (9 cases) x T1-T5-summary = 54 runs.
+name: step8_20b_c
+description: "Step 8, gpt-oss-20b: set C (9 cost cases) on all six topologies."
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: [user_task_0]  # unused: `cases` names the runs
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: 1
+seed: 20261026
+max_tokens: 2048
+include_benign: false
+cases:
+  - banking:approval_manipulation:unauthorized_action:r7
+  - banking:context_blending:sabotage:r2
+  - banking:fake_authority:unauthorized_action:r2
+  - banking:fake_completion:exfiltration:r2
+  - banking:multi_hop:unauthorized_action:r0
+  - banking:obfuscation:exfiltration:r2
+  - banking:plain_instruction:sabotage:r2
+  - banking:self_replicating:propagation:r6
+  - banking:social_engineering:unauthorized_action:r2

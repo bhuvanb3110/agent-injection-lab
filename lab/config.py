@@ -77,10 +77,11 @@ class ExperimentConfig(_Strict):
     max_tokens: int = Field(ge=1)  # sent on every call (D28)
     attack: AttackConfig | None = None
     include_benign: bool = True  # with an attack: also run each user task without injections
-    # Added in milestone 3: the name of an attack-case set (PLAN_M3 step 2). None keeps the
-    # milestone-2 behaviour, where `attack` and the task lists decide the cases. The case files
-    # arrive in step 6; until then a config that names a set can't be expanded.
-    cases: str | None = None
+    # Added in milestone 3: the attack cases to run (PLAN_M3 step 2), as the name of a set or a
+    # list of case IDs (the step-8 dev configs). None keeps the milestone-2 behaviour, where
+    # `attack` and the task lists decide the cases. A config that names cases can't be expanded
+    # yet: the runner doesn't place the new payloads (see `expand`).
+    cases: str | list[str] | None = None
 
     @model_validator(mode="after")
     def _one_way_to_name_the_topology(self) -> ExperimentConfig:
@@ -90,7 +91,9 @@ class ExperimentConfig(_Strict):
             not self.topologies or len(set(self.topologies)) != len(self.topologies)
         ):
             raise ValueError("`topologies` must be a non-empty list of distinct topologies")
-        if self.attack is None and not self.include_benign:
+        if self.cases is not None and not self.cases:
+            raise ValueError("`cases` must name a set or list at least one case")
+        if self.attack is None and self.cases is None and not self.include_benign:
             raise ValueError("include_benign: false with no attack leaves nothing to run")
         return self
 
@@ -163,8 +166,8 @@ def expand(config: ExperimentConfig, providers: dict[str, ProviderConfig]) -> li
     """
     if config.cases is not None:
         raise ValueError(
-            f"cases: {config.cases!r} can't be expanded yet; case files arrive in milestone 3, "
-            "step 6"
+            f"cases: {config.cases!r} can't be expanded yet; running the new attack cases is "
+            "not built"
         )
     infos = [(ref, model_info(ref, providers)) for ref in config.models]
     cases: list[tuple[str, str | None]] = []  # (user task, injection task or None)
