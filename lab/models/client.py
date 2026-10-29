@@ -193,6 +193,7 @@ class OpenAICompatClient:
 
 
 TOOL_USE_FAILED = "tool_use_failed"
+OUTPUT_PARSE_FAILED = "output_parse_failed"
 _NAME = re.compile(r'"name"\s*:\s*"([^"]+)"')
 _ARGUMENTS_TO_END = re.compile(r'"arguments"\s*:\s*(.*)\}\s*$', re.DOTALL)
 _JSON_PARSE_FAILURE = "Failed to parse tool call arguments as JSON"
@@ -201,7 +202,8 @@ UNKNOWN_TOOL = "unknown_tool"
 
 def recovered_call(error: openai.APIStatusError, request: ModelRequest) -> RawToolCall | None:
     """The tool call in a Groq 400 `tool_use_failed` body, whatever was wrong with it (D76,
-    D82); None only if the error is not that, and then it stands as before.
+    D82); None only if the error is not that, and then it stands as before. A 400
+    `output_parse_failed` is recovered the same way, as its own kind (D116).
 
     Groq validates tool calls server-side and rejects the whole response when one is bad; the
     model's attempt is in `failed_generation`. Every such rejection is the model's mistake, so it
@@ -218,7 +220,7 @@ def recovered_call(error: openai.APIStatusError, request: ModelRequest) -> RawTo
     body = error.body
     if error.status_code != 400 or not isinstance(body, dict):
         return None
-    if body.get("code") != TOOL_USE_FAILED:
+    if body.get("code") not in (TOOL_USE_FAILED, OUTPUT_PARSE_FAILED):
         return None
     generation = body.get("failed_generation")
     generation = generation if isinstance(generation, str) else ""
@@ -233,6 +235,10 @@ def recovered_call(error: openai.APIStatusError, request: ModelRequest) -> RawTo
             id=f"{prefix}_{digest[:24]}", name=name, arguments=arguments, **fields
         )
 
+    if body["code"] == OUTPUT_PARSE_FAILED:
+        # Groq could not parse the model's own generation (D116); there may be nothing to read in
+        # `failed_generation`, so no classification is attempted. Kept under its own label.
+        return call("rej", UNKNOWN_TOOL, generation, rejection=OUTPUT_PARSE_FAILED, detail=message)
     try:
         value = json.loads(generation)
     except json.JSONDecodeError:

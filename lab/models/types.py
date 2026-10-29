@@ -58,7 +58,8 @@ class RawToolCall(BaseModel):
     # Another call Groq's 400 `tool_use_failed` refused and the client recovered (D82), and why:
     # "malformed" (arguments not JSON; `arguments` is the model's raw text), "invalid_arguments"
     # (JSON that fails the tool's schema) or "unparsed" (the generation could not be read at
-    # all). `detail` is Groq's message. Never run. None in every response cached before D82.
+    # all) or "output_parse_failed" (Groq's other 400, D116). `detail` is Groq's message. Never
+    # run. None in every response cached before D82.
     rejection: str | None = None
     detail: str | None = None
 
@@ -125,6 +126,9 @@ class CallRecord(BaseModel):
     # together (out of scope included): what the per-agent cap counts.
     invalid_argument_tool_calls: int = 0
     unparsed_tool_calls: int = 0
+    # Groq's 400 `output_parse_failed`, recovered like the above (D116). Also in
+    # `rejected_tool_calls`, which is now all five kinds.
+    output_parse_failed_calls: int = 0
     rejected_tool_calls: int = 0
     # The limiter's pre-send estimate (lab/scheduler/limits.py:estimate_tokens), kept only for a
     # call the provider sent no usage for (D79). An estimate, not a measurement: the input is
@@ -220,6 +224,10 @@ class RunContext:
     @property
     def unparsed_tool_calls(self) -> int:
         return sum(call.unparsed_tool_calls for call in self.calls)
+
+    @property
+    def output_parse_failed_calls(self) -> int:
+        return sum(call.output_parse_failed_calls for call in self.calls)
 
     def rejected_by(self, agent_id: str) -> int:
         """Calls Groq rejected as `tool_use_failed` made by one agent so far (D76, D82: the cap

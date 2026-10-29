@@ -448,6 +448,10 @@ def _attack_outcome_lines(v: GroupMetrics) -> list[str]:
     if v.unparsed_tool_calls:
         lines.append(f"  unparsed               {v.unparsed_tool_calls} call(s) in "
                      f"{v.runs_with_unparsed_tool_calls} run(s), rejected by Groq, never run")
+    if v.output_parse_failed_calls:
+        lines.append(f"  output-parse-failed    {v.output_parse_failed_calls} call(s) in "
+                     f"{v.runs_with_output_parse_failed_calls} run(s), rejected by Groq, "
+                     "never run")
     return lines
 
 
@@ -664,6 +668,9 @@ def _rejected_lines(g: GroupMetrics) -> list[str]:
     if g.unparsed_tool_calls:
         out.append(f"  unparsed         {g.unparsed_tool_calls} call(s) in "
                    f"{g.runs_with_unparsed_tool_calls} run(s), rejected by Groq, never run")
+    if g.output_parse_failed_calls:
+        out.append(f"  output-parse-failed {g.output_parse_failed_calls} call(s) in "
+                   f"{g.runs_with_output_parse_failed_calls} run(s), rejected by Groq, never run")
     return out
 
 

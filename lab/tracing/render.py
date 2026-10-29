@@ -121,6 +121,8 @@ def _body(e: TraceEvent) -> list[str]:
                 scope = "  INVALID ARGUMENTS (rejected by Groq), not run"
             elif call.get("rejection") == "unparsed":
                 scope = "  UNPARSED (rejected by Groq), not run"
+            elif call.get("rejection") == "output_parse_failed":
+                scope = "  OUTPUT PARSE FAILED (rejected by Groq), not run"
             out.append(f"call {call['function']}({args})  id {call.get('id')}{scope}")
         if p.get("error"):
             out += _text_lines("error", p["error"])

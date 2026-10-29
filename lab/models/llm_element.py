@@ -47,7 +47,7 @@ from agentdojo.types import (
 
 from lab.errors import ModelError
 from lab.models.cache import request_key
-from lab.models.client import ChatClient
+from lab.models.client import OUTPUT_PARSE_FAILED, ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
 from lab.scheduler.limits import estimate_tokens
@@ -95,8 +95,9 @@ class RejectedToolCall(FunctionCall):
     (D82). It is never executed.
 
     `rejection` is "invalid_arguments" (the arguments are JSON but fail the tool's schema; `args`
-    holds them) or "unparsed" (the generation could not be read; `raw_arguments` holds all of it
-    and `args` is empty). `detail` is Groq's message. The markers search both fields.
+    holds them), "unparsed" (the generation could not be read; `raw_arguments` holds all of it
+    and `args` is empty) or "output_parse_failed" (Groq's other 400, D116: stored like unparsed,
+    `raw_arguments` often empty). `detail` is Groq's message. The markers search both fields.
     """
 
     rejection: str
@@ -247,6 +248,8 @@ class LabLLM(BasePipelineElement):
                       for c in calls)
         unparsed = sum(isinstance(c, RejectedToolCall) and c.rejection == "unparsed"
                        for c in calls)
+        parse_failed = sum(isinstance(c, RejectedToolCall) and c.rejection == OUTPUT_PARSE_FAILED
+                           for c in calls)
         rejected = sum(1 for raw in response.tool_calls if raw.out_of_scope or raw.rejection)
         estimate = None
         if response.input_tokens is None or response.output_tokens is None:
@@ -269,6 +272,7 @@ class LabLLM(BasePipelineElement):
                 out_of_scope_tool_calls=out_of_scope,
                 invalid_argument_tool_calls=invalid,
                 unparsed_tool_calls=unparsed,
+                output_parse_failed_calls=parse_failed,
                 rejected_tool_calls=rejected,
                 estimated_input_tokens=estimate.input_tokens if estimate else None,
                 estimated_output_tokens=estimate.output_tokens if estimate else None,
@@ -408,6 +412,11 @@ def rejected_call_result(call: RejectedToolCall) -> ChatToolResultMessage:
             f"ValidationError: {call.detail}. The tool was not run. Call `{call.function}` "
             "again with arguments that match its schema."
         )
+    elif call.rejection == OUTPUT_PARSE_FAILED:
+        # Groq's message only: the failed generation may be empty, and is never echoed back (D116).
+        error = "Your last response was rejected and no tool was run."
+        if call.detail:
+            error += f" {call.detail}"
     else:
         error = (
             "Your last tool call was rejected as invalid and was not run. Call one of your "
@@ -532,8 +541,8 @@ def response_to_assistant_message(response: ModelResponse) -> ChatAssistantMessa
                 # The client only builds these from a JSON object (client.py:out_of_scope_call).
                 raise ValueError(f"Out-of-scope call {raw.name!r} has arguments that aren't one")
             tool_calls.append(OutOfScopeToolCall(function=raw.name, args=args, id=raw.id))
-        elif raw.rejection in ("invalid_arguments", "unparsed"):
-            unparsed = raw.rejection == "unparsed"
+        elif raw.rejection in ("invalid_arguments", "unparsed", OUTPUT_PARSE_FAILED):
+            unparsed = raw.rejection != "invalid_arguments"
             tool_calls.append(
                 RejectedToolCall(
                     function=raw.name,

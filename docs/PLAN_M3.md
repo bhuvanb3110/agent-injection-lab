@@ -291,6 +291,7 @@ U = unauthorized action, X = exfiltration, S = sabotage, P = propagation.
    - what was seen before registration:
      - M1 benign, the M2 plumbing runs on the dev case, and D88;
      - **the step-8 dev runs:** cost columns; the sanity-check reading of dev outcomes (errors, crashes, misfires of predicates and `attacker_effect`, marker hygiene, the channel and stratum fields), with no ASR summary computed; the dev final answers put on the label sheet;
+     - **D116 (found in the step-8 dev sanity check, `user_task_5` × `injection_task_6`):** Groq's 400 `output_parse_failed` is recovered as a model mistake (a provider-response handling fix, decided without reference to attack outcomes); three stored dev runs ended `model_error/http_400` before it and stay as recorded;
      - **every logged bug fix made after step 8** to templates, predicates or channels, each with its DECISIONS entry.
 4. **Design:**
    - the topology cells;
