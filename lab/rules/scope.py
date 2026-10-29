@@ -60,6 +60,10 @@ class SplitData:
     def is_test_screen(self, case_id: str | None) -> bool:
         return case_id is not None and case_id in self.test_screen
 
+    def is_test_confirm(self, case_id: str | None) -> bool:
+        """A test-split case that is not one of the 50 screening cases (D90)."""
+        return self.is_test(case_id) and not self.is_test_screen(case_id)
+
     def named_set(self, name: str) -> list[str]:
         """The case IDs a `cases: <name>` refers to: all cases (`banking_v1`) or a subset file
         (`test_screen`, `120b`, `repeat`, with or without the `banking_` prefix)."""
@@ -98,6 +102,10 @@ class Scope:
     @property
     def has_test_screen(self) -> bool:
         return any(self.data.is_test_screen(c) for c in self.case_ids)
+
+    @property
+    def has_test_confirm(self) -> bool:
+        return any(self.data.is_test_confirm(c) for c in self.case_ids)
 
     @property
     def has_attack_cases(self) -> bool:

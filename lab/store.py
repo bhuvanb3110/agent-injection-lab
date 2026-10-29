@@ -14,8 +14,9 @@ Tables (DECISIONS.md D2, D25, D51):
 - `requests`: every real request sent to a provider, including failed attempts. The rate
   limiter reads it back on start-up so daily usage survives a restart.
 - `outcome_views`: one row each time `lab report` or `lab trace` showed the outcomes of
-  test-screen runs, with the time. `lab validate-rules --store` checks that none is earlier than
-  the unblinding record (D103, D117). Nothing is written for any other view.
+  blinded runs (test-screen or test-confirm), with the time and the set. `lab validate-rules
+  --store` checks that none is earlier than that set's unblinding entry (D103, D117). Nothing
+  is written for any other view.
 
 Rows are only inserted, never updated: a run ID that is already present is a bug, not a retry.
 The one exception is a run's failure label, an annotation added after scoring (D43).
@@ -155,7 +156,8 @@ class OutcomeView:
     viewed_at: str  # ISO 8601 UTC
     command: str  # "report" or "trace"
     detail: str  # the experiments, or the run ID
-    test_screen_runs: int  # how many test-screen runs' outcomes were shown
+    scope: str  # "test_screen" or "test_confirm": which blinded set
+    runs: int  # how many of its runs' outcomes were shown
 
 
 def _total(values: Sequence[int | None]) -> int | None:
@@ -266,7 +268,8 @@ CREATE TABLE IF NOT EXISTS outcome_views (
     viewed_at TEXT NOT NULL,
     command TEXT NOT NULL,
     detail TEXT NOT NULL,
-    test_screen_runs INTEGER NOT NULL
+    scope TEXT NOT NULL,
+    runs INTEGER NOT NULL
 );
 """
 
@@ -619,18 +622,18 @@ class RunStore:
     # --- the blinding log (D103) ---
 
     def log_outcome_view(
-        self, viewed_at: str, command: str, detail: str, test_screen_runs: int
+        self, viewed_at: str, command: str, detail: str, scope: str, runs: int
     ) -> None:
         with self._db:
             self._db.execute(
-                "INSERT INTO outcome_views (viewed_at, command, detail, test_screen_runs)"
-                " VALUES (?, ?, ?, ?)",
-                (viewed_at, command, detail, test_screen_runs),
+                "INSERT INTO outcome_views (viewed_at, command, detail, scope, runs)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (viewed_at, command, detail, scope, runs),
             )
 
     def outcome_views(self) -> list[OutcomeView]:
         rows = self._db.execute(
-            "SELECT viewed_at, command, detail, test_screen_runs FROM outcome_views ORDER BY id"
+            "SELECT viewed_at, command, detail, scope, runs FROM outcome_views ORDER BY id"
         )
         return [OutcomeView(*row) for row in rows]
 

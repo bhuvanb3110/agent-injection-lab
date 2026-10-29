@@ -10,7 +10,7 @@ absent PREREGISTRATION.md fails the checks that read it, so group A cannot pass 
 |---|---|---|
 | A1 pinned hashes | 1 | a pinned file is missing or its raw bytes differ; no readable pin block |
 | A2 unpinned files | 2 | a file under data/attack_cases/ (or the golden file) is not pinned |
-| A2 freeze log | 2 | a freeze is invalid, or an unblinding / judge record is |
+| A2 freeze log | 2 | the hash chain is broken, or an entry in it is invalid |
 | A2 defense configs | 2 | an experiment with test cases names a defense config not frozen |
 | A3 schema | 3 | a row does not load, an ID repeats, a predicate is not registered |
 | A4 split | 4 | a case is split twice or not at all, a pair is in both splits, the D84 pair |
@@ -37,14 +37,13 @@ import yaml
 from lab.rules.golden import GOLDEN_PATH, golden_problems
 from lab.rules.prereg import (
     DEFENSE_CONFIG_DIR,
-    JUDGE_MIN_KAPPA,
     PreregError,
     freeze_problems,
     load_freeze_log,
     load_pins,
     load_values,
+    log_problems,
     sha256_file,
-    unblinding_problems,
 )
 from lab.rules.scope import DATA_SUBDIR, DOMAIN, load_split_data, scope_of_raw
 
@@ -120,21 +119,15 @@ def check_unpinned(root: Path) -> Check:
 
 
 def check_freeze_log(root: Path) -> Check:
-    """The freeze log, if there is one: every freeze valid, the unblinding record valid, and the
-    judge registered with kappa at least 0.6. An absent log is fine: nothing is frozen yet."""
+    """The freeze log, if there is one: the hash chain, every freeze valid, both unblinding
+    records valid, the M6 confirmation valid, and the judge registered with kappa at least 0.6.
+    An absent log is fine: nothing is frozen yet."""
     name = "A2 freeze log"
     try:
         log = load_freeze_log(root)
     except PreregError as error:
         return Check(name, (str(error),))
-    if log is None:
-        return Check(name)
-    _, problems = freeze_problems(log, root)
-    if log.unblinding is not None:
-        problems += [f"unblinding record: {p}" for p in unblinding_problems(log, root)]
-    if log.judge is not None and log.judge.kappa < JUDGE_MIN_KAPPA:
-        problems.append(f"judge registration: kappa {log.judge.kappa} is below {JUDGE_MIN_KAPPA}")
-    return Check(name, tuple(problems))
+    return Check(name) if log is None else Check(name, tuple(log_problems(log, root)))
 
 
 def _strings(node: Any) -> list[str]:

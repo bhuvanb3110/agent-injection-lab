@@ -30,7 +30,7 @@ from lab.models.cache import ResponseCache
 from lab.models.providers import Price, load_providers
 from lab.rules import PROJECT_ROOT
 from lab.rules.checks import format_checks, run_group_a
-from lab.rules.guard import check_run, is_test_screen
+from lab.rules.guard import blinded_scope, check_run
 from lab.rules.prereg import blinding_state
 from lab.rules.scope import load_split_data
 from lab.rules.store_checks import run_group_b
@@ -299,13 +299,15 @@ def cmd_trace(run_id: str, store_path: Path) -> int:
                   file=sys.stderr)
             return 1
         record = store.get_run(found[0])
-        if is_test_screen(record.spec, load_split_data(PROJECT_ROOT).test_screen):
-            state = blinding_state(PROJECT_ROOT)
+        scope = blinded_scope(record.spec, load_split_data(PROJECT_ROOT))
+        if scope is not None:
+            state = blinding_state(PROJECT_ROOT, scope)
             if not state.unblinded:
-                print(f"Run {record.run_id[:12]} is a test-screen run, and its trace shows its "
-                      f"outcome, so it stays blinded (D103): {state.reason}.", file=sys.stderr)
+                print(f"Run {record.run_id[:12]} is a {scope.replace('_', '-')} run, and its "
+                      f"trace shows its outcome, so it stays blinded (D103): {state.reason}.",
+                      file=sys.stderr)
                 return 1
-            store.log_outcome_view(_now_iso(), "trace", record.run_id, 1)
+            store.log_outcome_view(_now_iso(), "trace", record.run_id, scope, 1)
         print(ascii_safe(trace_text(record, store.get_prefix_divergence(record.run_id))))
         return 0
     finally:
@@ -322,12 +324,13 @@ def cmd_report(
     try:
         all_records = [r for experiment in experiments for r in store.runs(experiment)]
         # Blinding (D103). `--blind` hides every run's outcome; without it, the runs of the 50
-        # test-screen cases are hidden until the freeze log holds a valid unblinding record.
-        test_screen = load_split_data(PROJECT_ROOT).test_screen
-        screen_ids = {r.run_id for r in all_records if is_test_screen(r.spec, test_screen)}
-        state = blinding_state(PROJECT_ROOT)
-        hidden = [r for r in all_records
-                  if blind or (r.run_id in screen_ids and not state.unblinded)]
+        # test-screen cases, and of the test-confirm cases, are hidden until the freeze log holds
+        # a valid unblinding record for that set.
+        data = load_split_data(PROJECT_ROOT)
+        scope_of_run = {r.run_id: blinded_scope(r.spec, data) for r in all_records}
+        states = {s: blinding_state(PROJECT_ROOT, s) for s in ("test_screen", "test_confirm")}
+        hidden = [r for r in all_records if blind or (
+            (s := scope_of_run[r.run_id]) is not None and not states[s].unblinded)]
         hidden_ids = {r.run_id for r in hidden}
         records = [r for r in all_records if r.run_id not in hidden_ids]
         prices = {
@@ -343,10 +346,15 @@ def cmd_report(
             _print_outcome_report(experiments, records, len(all_records), expected, prices, store)
         if hidden:
             print()
-            print(blind_text(hidden, prices, "--blind" if blind else state.reason))
-        shown_screen = sum(r.run_id in screen_ids for r in records)
-        if shown_screen:  # test-screen outcomes were shown: only possible once unblinded
-            store.log_outcome_view(_now_iso(), "report", ", ".join(experiments), shown_screen)
+            why = "--blind" if blind else "; ".join(sorted({
+                f"{s.replace('_', '-')}: {states[s].reason}"
+                for r in hidden if (s := scope_of_run[r.run_id]) is not None
+            }))
+            print(blind_text(hidden, prices, why))
+        for scope in ("test_screen", "test_confirm"):  # blinded outcomes shown: once unblinded
+            shown = sum(scope_of_run[r.run_id] == scope for r in records)
+            if shown:
+                store.log_outcome_view(_now_iso(), "report", ", ".join(experiments), scope, shown)
         return 0
     finally:
         store.close()

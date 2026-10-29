@@ -46,10 +46,10 @@ class RunSpec(BaseModel):
     # task and injection task have different IDs, so two cases never share a run ID.
     case_id: str | None = None
     # Added in milestone 3 (step 10): the SHA-256 of PREREGISTRATION.md for a run made under the
-    # preregistration (`lab run` sets it on test-split and registered runs, D102). None is left
-    # out of the run ID, so every run made before it keeps its ID (D48 pattern), and so does
-    # every dev-case run. A run made under an amended prereg has another ID: it is another
-    # registration.
+    # preregistration (`lab run` sets it on registered runs, D102). Recorded only: it is never
+    # part of the run ID, whatever its value. So an amendment, which changes the prereg's hash,
+    # changes no run ID, and a resumed sweep carries on. Which committed version of the prereg
+    # a run belongs to is checked from the store by `validate-rules --store` (D117).
     prereg_sha256: str | None = None
 
     @model_validator(mode="after")
@@ -65,8 +65,9 @@ class RunSpec(BaseModel):
     @property
     def run_id(self) -> str:
         fields = self.model_dump(mode="json")
-        for name in ("attack", "injection_task_id", "case_id", "prereg_sha256"):
+        for name in ("attack", "injection_task_id", "case_id"):
             if fields[name] is None:
                 del fields[name]
+        del fields["prereg_sha256"]  # recorded only, never part of the ID
         canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

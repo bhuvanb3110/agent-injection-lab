@@ -15,22 +15,26 @@ states that live in files that cannot be pinned whole. Today: the sampling setti
 limits that are re-checked before every run.
 
 **The freeze log**, `FREEZE_LOG.yaml`, is a separate file so that a freeze does not change the
-prereg's own hash (every M4 run carries it). It is append-only by convention: git history is the
-audit trail. It holds the six defense freezes, the unblinding record and the judge's
+prereg's own hash. It is an ordered list of entries, each carrying the hash of the entry before
+it (a hash chain), so that editing, removing or reordering an earlier entry breaks the entry
+after it and fails group A. The chain cannot see the last entry being edited or removed: git
+history is the audit trail for that. Entries: the six defense freezes, the unblinding of
+test-screen and of test-confirm outcomes, the judge's registration and the M6 confirmation
 registration.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 PREREG_NAME = "PREREGISTRATION.md"
 FREEZE_LOG_NAME = "FREEZE_LOG.yaml"
@@ -166,6 +170,10 @@ def load_values(root: Path) -> PreregValues:
 
 # --- the freeze log ------------------------------------------------------------------------
 
+GENESIS = "genesis"  # the `prev` of the first entry
+Scope = Literal["test_screen", "test_confirm"]
+SCOPES: tuple[Scope, ...] = ("test_screen", "test_confirm")
+
 
 def _utc(value: Any) -> datetime:
     if isinstance(value, str):
@@ -178,10 +186,27 @@ def _utc(value: Any) -> datetime:
     return value.astimezone(UTC)
 
 
-class Freeze(_Strict):
+def _check_hash(value: str) -> str:
+    if not _SHA256.fullmatch(value):
+        raise ValueError("not a lowercase hex SHA-256")
+    return value
+
+
+class _Entry(_Strict):
+    # `genesis` for the first entry, otherwise the entry_hash of the entry before it.
+    prev: str
+
+    @field_validator("prev")
+    @classmethod
+    def _prev(cls, value: str) -> str:
+        return value if value == GENESIS else _check_hash(value)
+
+
+class Freeze(_Entry):
     """One defense configuration frozen: its file and the file's hash, before its first
     test-screen run."""
 
+    kind: Literal["freeze"]
     defense: Defense
     config: str  # repository-relative path
     sha256: str
@@ -195,14 +220,16 @@ class Freeze(_Strict):
     @field_validator("sha256")
     @classmethod
     def _hash(cls, value: str) -> str:
-        if not _SHA256.fullmatch(value):
-            raise ValueError("not a lowercase hex SHA-256")
-        return value
+        return _check_hash(value)
 
 
-class Unblinding(_Strict):
-    """The dated record that lets test-screen outcomes be read (D103)."""
+class Unblinding(_Entry):
+    """The dated record that lets the outcomes of a blinded set be read (D103). `test_screen`:
+    valid once all six defenses are frozen. `test_confirm`: valid once the M6 confirmation is
+    registered."""
 
+    kind: Literal["unblinding"]
+    scope: Scope
     recorded_at: datetime
     note: str = ""
 
@@ -212,9 +239,10 @@ class Unblinding(_Strict):
         return _utc(value)
 
 
-class JudgeRegistration(_Strict):
+class JudgeRegistration(_Entry):
     """The judge's registration (D105): committed before it scores any test output."""
 
+    kind: Literal["judge"]
     registered_at: datetime
     code_sha256: str
     labels_sha256: str
@@ -226,10 +254,91 @@ class JudgeRegistration(_Strict):
         return _utc(value)
 
 
+class Confirmation(_Entry):
+    """The planned M6 registration (D106): which configurations the test-confirm cases will be
+    run with, written down after the test-screen outcomes were unblinded and before any
+    test-confirm run. `selection` is a committed file that says so, pinned here by hash."""
+
+    kind: Literal["confirmation"]
+    registered_at: datetime
+    selection: str  # repository-relative path
+    selection_sha256: str
+    note: str = ""
+
+    @field_validator("registered_at", mode="before")
+    @classmethod
+    def _date(cls, value: Any) -> datetime:
+        return _utc(value)
+
+    @field_validator("selection_sha256")
+    @classmethod
+    def _hash(cls, value: str) -> str:
+        return _check_hash(value)
+
+
+AnyEntry = Freeze | Unblinding | JudgeRegistration | Confirmation
+_ENTRY: TypeAdapter[AnyEntry] = TypeAdapter(
+    Annotated[AnyEntry, Field(discriminator="kind")]
+)
+
+
+def entry_time(entry: AnyEntry) -> datetime:
+    if isinstance(entry, Freeze):
+        return entry.frozen_at
+    if isinstance(entry, Unblinding):
+        return entry.recorded_at
+    return entry.registered_at
+
+
+def entry_hash(entry: AnyEntry) -> str:
+    """SHA-256 of the entry's canonical JSON (sorted keys, no spaces, times as UTC with a Z).
+    It covers `prev`, so it covers the whole chain before it. It does not depend on how the YAML
+    is formatted, only on what the entry says."""
+    body = json.dumps(entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def link(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For whoever appends to the log: the entries (as dicts, with no `prev` or a stale one) with
+    `prev` filled in down the chain, ready to be written under `entries:`."""
+    linked: list[dict[str, Any]] = []
+    prev = GENESIS
+    for raw in entries:
+        entry = {**raw, "prev": prev}
+        prev = entry_hash(_ENTRY.validate_python(entry))
+        linked.append(entry)
+    return linked
+
+
 class FreezeLog(_Strict):
-    freezes: list[Freeze] = Field(default_factory=list)
-    unblinding: Unblinding | None = None
-    judge: JudgeRegistration | None = None
+    entries: list[Annotated[AnyEntry, Field(discriminator="kind")]] = Field(default_factory=list)
+
+    @property
+    def freezes(self) -> list[Freeze]:
+        return [e for e in self.entries if isinstance(e, Freeze)]
+
+    def unblindings(self, scope: Scope) -> list[Unblinding]:
+        return [e for e in self.entries if isinstance(e, Unblinding) and e.scope == scope]
+
+    def unblinding(self, scope: Scope) -> Unblinding | None:
+        found = self.unblindings(scope)
+        return found[0] if found else None
+
+    @property
+    def judges(self) -> list[JudgeRegistration]:
+        return [e for e in self.entries if isinstance(e, JudgeRegistration)]
+
+    @property
+    def judge(self) -> JudgeRegistration | None:
+        return self.judges[0] if self.judges else None
+
+    @property
+    def confirmations(self) -> list[Confirmation]:
+        return [e for e in self.entries if isinstance(e, Confirmation)]
+
+    @property
+    def confirmation(self) -> Confirmation | None:
+        return self.confirmations[0] if self.confirmations else None
 
 
 def load_freeze_log(root: Path) -> FreezeLog | None:
@@ -242,6 +351,25 @@ def load_freeze_log(root: Path) -> FreezeLog | None:
         return FreezeLog.model_validate(data)
     except (yaml.YAMLError, ValidationError) as error:
         raise PreregError(f"{FREEZE_LOG_NAME} is malformed: {error}") from error
+
+
+def chain_problems(log: FreezeLog) -> list[str]:
+    """The hash chain, and the order in time. An entry whose `prev` is not the hash of the entry
+    before it means an earlier entry was edited, removed or reordered (or this one was written
+    wrongly); each such entry is reported with the `prev` it should have."""
+    problems = []
+    expected = GENESIS
+    previous: AnyEntry | None = None
+    for number, entry in enumerate(log.entries, start=1):
+        if entry.prev != expected:
+            problems.append(
+                f"entry {number} ({entry.kind}): prev is {entry.prev}, expected {expected}: "
+                "an earlier entry was edited, removed or reordered"
+            )
+        if previous is not None and entry_time(entry) < entry_time(previous):
+            problems.append(f"entry {number} ({entry.kind}) is dated before entry {number - 1}")
+        expected, previous = entry_hash(entry), entry
+    return problems
 
 
 def freeze_problems(log: FreezeLog, root: Path) -> tuple[dict[str, Freeze], list[str]]:
@@ -272,49 +400,133 @@ def freeze_problems(log: FreezeLog, root: Path) -> tuple[dict[str, Freeze], list
     return valid, problems
 
 
+def unblinding_problems(log: FreezeLog, root: Path, scope: Scope = "test_screen") -> list[str]:
+    """Why the unblinding record of `scope`, if there is one, is not valid.
+
+    `test_screen`: valid only when all six defenses are frozen, each at or before the record
+    (D103). `test_confirm`: valid only when the M6 confirmation is registered and valid, at or
+    before the record."""
+    record = log.unblinding(scope)
+    if record is None:
+        return []
+    at = record.recorded_at
+    problems: list[str] = []
+    if scope == "test_screen":
+        frozen, _ = freeze_problems(log, root)
+        missing = [d for d in DEFENSES if d not in frozen]
+        late = [d for d in DEFENSES if d in frozen and frozen[d].frozen_at > at]
+        if missing:
+            problems.append(f"defenses not frozen: {', '.join(missing)}")
+        if late:
+            problems.append(f"defenses frozen after the record: {', '.join(late)}")
+        return problems
+    confirmation = log.confirmation
+    if confirmation is None:
+        return ["there is no confirmation registration"]
+    problems = confirmation_problems(log, root)
+    if confirmation.registered_at > at:
+        problems.append("the confirmation was registered after the record")
+    return problems
+
+
+def confirmation_problems(log: FreezeLog, root: Path) -> list[str]:
+    """Why the M6 confirmation record, if there is one, is not valid: its selection file must
+    exist with the recorded hash, there must be exactly one such record, and it must come after a
+    valid unblinding of the test-screen outcomes (M6 picks configurations from screening)."""
+    records = log.confirmations
+    if not records:
+        return []
+    problems = []
+    if len(records) > 1:
+        problems.append(f"{len(records)} confirmation records; there is one")
+    record = records[0]
+    path_problem = relative_path_problem(record.selection)
+    if path_problem is not None:
+        problems.append(path_problem)
+    elif not (root / record.selection).is_file():
+        problems.append(f"{record.selection} does not exist")
+    elif sha256_file(root / record.selection) != record.selection_sha256:
+        problems.append(f"{record.selection} changed after it was registered")
+    screen = log.unblinding("test_screen")
+    if screen is None or unblinding_problems(log, root, "test_screen"):
+        problems.append("the test-screen outcomes are not validly unblinded before it")
+    elif record.registered_at < screen.recorded_at:
+        problems.append("registered before the test-screen unblinding record")
+    return problems
+
+
+def log_problems(log: FreezeLog, root: Path) -> list[str]:
+    """Everything wrong with the log: the chain, the order, every freeze, both unblinding
+    records, the confirmation and the judge."""
+    problems = chain_problems(log)
+    problems += freeze_problems(log, root)[1]
+    for scope in SCOPES:
+        count = len(log.unblindings(scope))
+        if count > 1:
+            problems.append(f"{count} {scope} unblinding records; there is one")
+        problems += [f"{scope} unblinding record: {p}"
+                     for p in unblinding_problems(log, root, scope)]
+    problems += [f"confirmation: {p}" for p in confirmation_problems(log, root)]
+    if len(log.judges) > 1:
+        problems.append(f"{len(log.judges)} judge registrations; there is one")
+    if log.judge is not None and log.judge.kappa < JUDGE_MIN_KAPPA:
+        problems.append(f"judge registration: kappa {log.judge.kappa} is below {JUDGE_MIN_KAPPA}")
+    return problems
+
+
+def usable_log(root: Path) -> tuple[FreezeLog | None, str]:
+    """The log, or why it can not be relied on (absent, malformed, chain broken)."""
+    try:
+        log = load_freeze_log(root)
+    except PreregError as error:
+        return None, str(error)
+    if log is None:
+        return None, f"there is no {FREEZE_LOG_NAME}"
+    chain = chain_problems(log)
+    if chain:
+        return None, f"the {FREEZE_LOG_NAME} chain is broken ({chain[0]})"
+    return log, ""
+
+
 @dataclass(frozen=True)
 class Blinding:
-    """Whether test-screen outcomes may be shown (D103)."""
+    """Whether the outcomes of a blinded set (test-screen, or test-confirm) may be shown."""
 
     unblinded: bool
     reason: str
     recorded_at: datetime | None  # the unblinding record's time, if there is one
 
 
-def unblinding_problems(log: FreezeLog, root: Path) -> list[str]:
-    """Why the unblinding record, if there is one, is not valid: it is valid only when all six
-    defenses are frozen, each at or before the record (D103)."""
-    if log.unblinding is None:
-        return []
-    frozen, _ = freeze_problems(log, root)
-    at = log.unblinding.recorded_at
-    missing = [d for d in DEFENSES if d not in frozen]
-    late = [d for d in DEFENSES if d in frozen and frozen[d].frozen_at > at]
-    problems = []
-    if missing:
-        problems.append(f"defenses not frozen: {', '.join(missing)}")
-    if late:
-        problems.append(f"defenses frozen after the record: {', '.join(late)}")
-    return problems
-
-
-def blinding_state(root: Path) -> Blinding:
-    """Blinded until the freeze log holds a dated unblinding record that is valid. A record that
-    is not valid is refused, not half-honoured: the outcomes stay hidden."""
-    try:
-        log = load_freeze_log(root)
-    except PreregError as error:
-        return Blinding(False, str(error), None)
+def blinding_state(root: Path, scope: Scope = "test_screen") -> Blinding:
+    """Blinded until the freeze log holds a valid dated unblinding record for `scope`. A record
+    that is not valid is refused, not half-honoured: the outcomes stay hidden."""
+    log, why = usable_log(root)
     if log is None:
-        return Blinding(False, f"there is no {FREEZE_LOG_NAME}", None)
-    if log.unblinding is None:
-        return Blinding(False, f"{FREEZE_LOG_NAME} has no unblinding record", None)
-    at = log.unblinding.recorded_at
-    problems = unblinding_problems(log, root)
+        return Blinding(False, why, None)
+    record = log.unblinding(scope)
+    if record is None:
+        return Blinding(False, f"{FREEZE_LOG_NAME} has no {scope} unblinding record", None)
+    at = record.recorded_at
+    problems = unblinding_problems(log, root, scope)
     if problems:
         return Blinding(
             False,
-            f"the unblinding record of {at:%Y-%m-%d %H:%M} UTC is refused ({'; '.join(problems)})",
+            f"the {scope} unblinding record of {at:%Y-%m-%d %H:%M} UTC is refused "
+            f"({'; '.join(problems)})",
             at,
         )
     return Blinding(True, f"unblinded by the record of {at:%Y-%m-%d %H:%M} UTC", at)
+
+
+def confirmation_state(root: Path) -> tuple[bool, str]:
+    """Whether the test-confirm cases may be run: the freeze log holds a valid M6 confirmation
+    registration. Returns (registered, why not)."""
+    log, why = usable_log(root)
+    if log is None:
+        return False, why
+    if log.confirmation is None:
+        return False, f"{FREEZE_LOG_NAME} has no confirmation registration"
+    problems = confirmation_problems(log, root)
+    if problems:
+        return False, f"the confirmation registration is refused ({'; '.join(problems)})"
+    return True, ""

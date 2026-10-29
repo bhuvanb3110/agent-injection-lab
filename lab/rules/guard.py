@@ -8,11 +8,14 @@ Anything else, every dev-case experiment included, passes through untouched, wit
 `prereg_sha256`: its run IDs, config hash and scoring are what they were.
 
 An absent PREREGISTRATION.md fails group A, so test cases stay refused until step 11 writes it.
+Test-confirm cases (test-split, not one of the 50) are refused as well until the freeze log holds
+a valid M6 confirmation registration (`prereg.confirmation_state`).
 
-**The blinding.** A run is *test-screen* if its case is one of the 50 (`<domain>_test_screen.json`);
-a run of milestone 2's `important_instructions` attack is one of the 144 AgentDojo cases, found
-by its pair. While the freeze log has no valid unblinding record (`prereg.blinding_state`), `lab
-report` and `lab trace` do not show the outcomes of those runs.
+**The blinding.** A run is *test-screen* if its case is one of the 50 (`<domain>_test_screen.json`),
+*test-confirm* if it is any other test-split case; a run of milestone 2's `important_instructions`
+attack is one of the 144 AgentDojo cases, found by its pair. While the freeze log has no valid
+unblinding record for the run's set (`prereg.blinding_state`), `lab report` and `lab trace` do
+not show the outcomes of those runs.
 """
 
 from __future__ import annotations
@@ -24,8 +27,15 @@ from lab.config import ExperimentConfig
 from lab.errors import ConfigError
 from lab.rules import PROJECT_ROOT
 from lab.rules.checks import Check, run_group_a
-from lab.rules.prereg import PREREG_NAME, PreregError, load_pins, prereg_sha256
-from lab.rules.scope import case_id_of, load_split_data, scope_of
+from lab.rules.prereg import (
+    PREREG_NAME,
+    PreregError,
+    Scope,
+    confirmation_state,
+    load_pins,
+    prereg_sha256,
+)
+from lab.rules.scope import SplitData, case_id_of, load_split_data, scope_of
 from lab.scheduler.spec import RunSpec
 
 GroupA = Callable[[Path], list[Check]]
@@ -57,6 +67,13 @@ def check_run(
         ) from error
     if not (scope.has_test or (not scope.has_attack_cases and is_pinned(config_path, root))):
         return None
+    if scope.has_test_confirm:
+        registered, reason = confirmation_state(root)
+        if not registered:
+            raise ConfigError(
+                f"{config.name!r} contains test-confirm cases, which stay refused until the "
+                f"freeze log holds a valid M6 confirmation registration: {reason}."
+            )
     why = "contains test-split cases" if scope.has_test else "is pinned in the prereg"
     if prereg_sha256(root) is None:
         raise ConfigError(
@@ -74,6 +91,9 @@ def check_run(
     return prereg_sha256(root)
 
 
-def is_test_screen(spec: RunSpec, test_screen: frozenset[str]) -> bool:
+def blinded_scope(spec: RunSpec, data: SplitData) -> Scope | None:
+    """Which blinded set a run's outcome belongs to, or None if it is not blinded."""
     case = case_id_of(spec.case_id, spec.user_task_id, spec.injection_task_id)
-    return case is not None and case in test_screen
+    if data.is_test_screen(case):
+        return "test_screen"
+    return "test_confirm" if data.is_test_confirm(case) else None

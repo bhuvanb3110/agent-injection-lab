@@ -8,11 +8,11 @@ D117). Local only: the store is not committed, so CI cannot run them.
 | B2 D88 summary parser | summary_parser_v1 no longer agrees with D88's 10 hand verdicts |
 | B3 no test run before the prereg | a test-split case has a run that started before the commit |
 |  | that added PREREGISTRATION.md, or no such commit exists |
-| B4 prereg hash on every M4 run | a test-split run, or a benign control of a pinned experiment, |
-|  | lacks the current prereg hash |
+| B4 prereg version of M4 runs | a test-split run, or a benign control of a pinned experiment, |
+|  | lacks the committed prereg version in force when it started |
 | B5 judge registration | the judge scored a test run before it was registered, or kappa < 0.6 |
-| B6 blinding | `lab report` / `lab trace` showed test-screen outcomes before a valid |
-|  | unblinding record |
+| B6 blinding | `lab report` / `lab trace` showed test-screen or test-confirm outcomes |
+|  | before the valid unblinding record of that set |
 
 "M4 run" (B4) means: a run of a test-split case, or a benign run whose config is pinned in the
 prereg (the benign controls have no case). The guard stamps the same set (lab.rules.guard).
@@ -20,8 +20,10 @@ prereg (the benign controls have no case). The guard stamps the same set (lab.ru
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -36,7 +38,6 @@ from lab.rules.prereg import (
     blinding_state,
     load_freeze_log,
     load_pins,
-    prereg_sha256,
 )
 from lab.rules.scope import SplitData, case_id_of, load_split_data
 from lab.store import RunIndexRow, RunStore
@@ -49,17 +50,35 @@ def _time(iso: str) -> datetime:
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
-def git_prereg_commit_time(root: Path) -> datetime | None:
-    """When the commit that first added PREREGISTRATION.md was made, or None if no commit has
-    added it (not committed yet, or no git)."""
+@dataclass(frozen=True)
+class PreregVersion:
+    """One committed version of PREREGISTRATION.md: when it was committed and its raw-bytes
+    SHA-256, which is what `prereg_sha256` on a run holds."""
+
+    committed_at: datetime
+    sha256: str
+
+
+def git_prereg_versions(root: Path) -> list[PreregVersion]:
+    """Every committed version of PREREGISTRATION.md, oldest first. Empty if it was never
+    committed (or there is no git)."""
+    def git(*args: str) -> bytes:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                              check=True).stdout
+
     try:
-        out = subprocess.run(
-            ["git", "-C", str(root), "log", "--diff-filter=A", "--format=%cI", "--", PREREG_NAME],
-            capture_output=True, text=True, check=True,
-        ).stdout.split()
+        log = git("log", "--reverse", "--format=%H %cI", "--", PREREG_NAME).decode().splitlines()
+        versions = []
+        for line in log:
+            commit, committed_at = line.split()
+            try:
+                content = git("show", f"{commit}:{PREREG_NAME}")
+            except subprocess.CalledProcessError:
+                continue  # a commit that deleted it
+            versions.append(PreregVersion(_time(committed_at), hashlib.sha256(content).hexdigest()))
     except (OSError, subprocess.CalledProcessError):
-        return None
-    return _time(out[-1]) if out else None  # git lists newest first; the first add is the last
+        return []
+    return sorted(versions, key=lambda v: v.committed_at)  # stable: ties keep git's order
 
 
 # --- B1, B2: the hand-validated rules (D89) ----------------------------------------------------
@@ -125,12 +144,13 @@ def _is_test(row: RunIndexRow, data: SplitData) -> bool:
 
 
 def check_no_test_before_prereg(
-    index: list[RunIndexRow], data: SplitData, committed_at: datetime | None
+    index: list[RunIndexRow], data: SplitData, versions: list[PreregVersion]
 ) -> Check:
     name = "B3 no test-case run before the prereg commit"
     test_runs = [r for r in index if _is_test(r, data)]
     if not test_runs:
         return Check(name)
+    committed_at = versions[0].committed_at if versions else None
     if committed_at is None:
         return Check(name, (f"{len(test_runs)} test-case run(s) are stored, but no commit adds "
                             f"{PREREG_NAME}",))
@@ -160,20 +180,40 @@ def is_m4_run(row: RunIndexRow, data: SplitData, pinned_hashes: set[str]) -> boo
     return _is_test(row, data) or (benign and row.config_hash in pinned_hashes)
 
 
-def check_prereg_hash(root: Path, index: list[RunIndexRow], data: SplitData) -> Check:
-    name = "B4 every M4 run carries the current prereg hash"
+def version_in_force(versions: list[PreregVersion], at: datetime) -> PreregVersion | None:
+    """The latest committed version at or before `at`."""
+    earlier = [v for v in versions if v.committed_at <= at]
+    return earlier[-1] if earlier else None
+
+
+def check_prereg_hash(
+    root: Path, index: list[RunIndexRow], data: SplitData, versions: list[PreregVersion]
+) -> Check:
+    """Each M4 run's `prereg_sha256` is a committed version of PREREGISTRATION.md, and the one in
+    force when the run started (the latest committed at or before its start). An amendment adds a
+    version; it does not invalidate the runs made under the version before it."""
+    name = "B4 every M4 run carries the prereg version in force when it started"
     pinned = pinned_experiment_hashes(root)
     m4 = [r for r in index if is_m4_run(r, data, pinned)]
-    if not m4:
-        return Check(name)
-    current = prereg_sha256(root)
-    if current is None:
-        return Check(name, (f"{len(m4)} M4 run(s) are stored, but {PREREG_NAME} does not exist",))
-    wrong = [r for r in m4 if r.prereg_sha256 != current]
-    return Check(name, tuple(
-        f"{r.run_id[:12]} ({r.experiment}): prereg_sha256 is {r.prereg_sha256 or 'missing'}, "
-        f"current is {current[:12]}" for r in wrong
-    ))
+    problems = []
+    for r in m4:
+        label = f"{r.run_id[:12]} ({r.experiment})"
+        if r.prereg_sha256 is None:
+            problems.append(f"{label}: prereg_sha256 is missing")
+            continue
+        in_force = version_in_force(versions, _time(r.started_at))
+        if in_force is None:
+            problems.append(f"{label}: started {r.started_at}, before any committed version of "
+                            f"{PREREG_NAME}")
+        elif r.prereg_sha256 == in_force.sha256:
+            continue
+        elif r.prereg_sha256 in {v.sha256 for v in versions}:
+            problems.append(f"{label}: carries a committed version of the prereg, but not the one "
+                            f"in force at its start ({in_force.committed_at.isoformat()})")
+        else:
+            problems.append(f"{label}: prereg_sha256 {r.prereg_sha256[:12]} is not a committed "
+                            f"version of {PREREG_NAME}")
+    return Check(name, tuple(problems))
 
 
 def check_judge(
@@ -204,28 +244,30 @@ def check_judge(
 
 
 def check_blinding(root: Path, store: RunStore) -> Check:
-    name = "B6 no unblinded test-screen outcome before the unblinding record"
-    shown = [v for v in store.outcome_views() if v.test_screen_runs > 0]
-    if not shown:
-        return Check(name)
-    state = blinding_state(root)
-    if not state.unblinded or state.recorded_at is None:
-        return Check(name, (f"{len(shown)} view(s) showed test-screen outcomes, but "
-                            f"{state.reason}",))
-    return Check(name, tuple(
-        f"`lab {v.command} {v.detail}` showed {v.test_screen_runs} test-screen run(s) at "
-        f"{v.viewed_at}, before the unblinding record of {state.recorded_at.isoformat()}"
-        for v in shown if _time(v.viewed_at) < state.recorded_at
-    ))
+    """No view showed the outcomes of a blinded set (test-screen or test-confirm) before that
+    set's valid unblinding record."""
+    name = "B6 no unblinded test outcome before its unblinding record"
+    problems = []
+    for view in (v for v in store.outcome_views() if v.runs > 0):
+        state = blinding_state(root, "test_confirm" if view.scope == "test_confirm"
+                               else "test_screen")
+        what = (f"`lab {view.command} {view.detail}` showed {view.runs} {view.scope} run(s) "
+                f"at {view.viewed_at}")
+        if not state.unblinded or state.recorded_at is None:
+            problems.append(f"{what}, but {state.reason}")
+        elif _time(view.viewed_at) < state.recorded_at:
+            problems.append(f"{what}, before the unblinding record of "
+                            f"{state.recorded_at.isoformat()}")
+    return Check(name, tuple(problems))
 
 
 def run_group_b(
     root: Path,
     store: RunStore,
-    prereg_commit_time: Callable[[Path], datetime | None] = git_prereg_commit_time,
+    prereg_versions: Callable[[Path], list[PreregVersion]] = git_prereg_versions,
 ) -> list[Check]:
-    """Every group B check. `prereg_commit_time` says when PREREGISTRATION.md was committed
-    (None: it was not); by default it asks git."""
+    """Every group B check. `prereg_versions` lists the committed versions of
+    PREREGISTRATION.md, oldest first (none: it was never committed); by default it asks git."""
     checks: list[Check] = []
     try:
         golden = load_golden(root)
@@ -239,9 +281,10 @@ def run_group_b(
         return [*checks, Check("B3 to B5", (f"the split cannot be read: {error}",)),
                 check_blinding(root, store)]
     index = store.run_index()
+    versions = prereg_versions(root)
     checks += [
-        check_no_test_before_prereg(index, data, prereg_commit_time(root)),
-        check_prereg_hash(root, index, data),
+        check_no_test_before_prereg(index, data, versions),
+        check_prereg_hash(root, index, data, versions),
         check_judge(root, store, index, data),
         check_blinding(root, store),
     ]
