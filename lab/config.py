@@ -159,10 +159,10 @@ def model_info(ref: ModelRef, providers: dict[str, ProviderConfig]) -> ModelInfo
 def listed_cases(config: ExperimentConfig, case_set: CaseSet) -> list[AttackCase]:
     """The attack cases a `cases:` list names, in list order.
 
-    Dev only, until step 10 adds the real guard (`lab run` refusing test cases unless
-    `validate-rules` passes, D102): a test case named here is an error, so the test split can't
-    be run by accident. Unknown and repeated IDs are errors too; a repeated one would make two
-    identical run IDs, and the second would be silently skipped.
+    Which split a case is in is not decided here. A list with test-split cases is expanded like
+    any other; `lab run` refuses it unless `validate-rules` group A passes (lab.rules.guard,
+    D102, D116). Unknown and repeated IDs are errors: a repeated one would make two identical
+    run IDs, and the second would be silently skipped.
     """
     ids = config.cases
     if not isinstance(ids, list):
@@ -181,13 +181,6 @@ def listed_cases(config: ExperimentConfig, case_set: CaseSet) -> list[AttackCase
     repeated = sorted({i for i in ids if ids.count(i) > 1})
     if repeated:
         raise ValueError(f"Attack cases listed more than once: {repeated}")
-    not_dev = [i for i in ids if case_set.split_of[i] != "dev"]
-    if not_dev:
-        raise ValueError(
-            f"{len(not_dev)} of the listed cases are not in the dev split, which is all a "
-            f"`cases:` list may run until the test-split guard exists (PLAN_M3 step 10); "
-            f"first: {not_dev[0]}"
-        )
     return [case_set.cases[i] for i in ids]
 
 
@@ -195,6 +188,7 @@ def expand(
     config: ExperimentConfig,
     providers: dict[str, ProviderConfig],
     case_set: CaseSet | None = None,
+    prereg_sha256: str | None = None,
 ) -> list[RunSpec]:
     """One RunSpec per (repeat, case, model, topology).
 
@@ -202,6 +196,8 @@ def expand(
     benign control comes first, then its attacked cases in injection task order. With a `cases:`
     list a case is an attack case of the dataset (`case_set`, by default the committed one), and
     the order is the list's.
+
+    `prereg_sha256` is stamped on every spec (None for a run made outside the preregistration).
 
     Models are interleaved, so when one model hits its daily cap, every model has made the same
     progress through the case list and a partial day still gives a paired comparison. The
@@ -248,6 +244,7 @@ def expand(
                             ),
                             injection_task_id=injection_task_id,
                             case_id=attack_case.id if attack_case is not None else None,
+                            prereg_sha256=prereg_sha256,
                         )
                     )
     return specs

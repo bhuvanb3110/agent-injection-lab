@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from lab.models.providers import ReasoningEffort
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class RunSpec(BaseModel):
@@ -42,6 +45,12 @@ class RunSpec(BaseModel):
     # of the run ID, so every earlier run keeps its ID (D48 pattern). Different cases of one user
     # task and injection task have different IDs, so two cases never share a run ID.
     case_id: str | None = None
+    # Added in milestone 3 (step 10): the SHA-256 of PREREGISTRATION.md for a run made under the
+    # preregistration (`lab run` sets it on test-split and registered runs, D102). None is left
+    # out of the run ID, so every run made before it keeps its ID (D48 pattern), and so does
+    # every dev-case run. A run made under an amended prereg has another ID: it is another
+    # registration.
+    prereg_sha256: str | None = None
 
     @model_validator(mode="after")
     def _attack_and_injection_task_go_together(self) -> RunSpec:
@@ -49,12 +58,14 @@ class RunSpec(BaseModel):
             raise ValueError("attack and injection_task_id must both be set, or both be None")
         if self.case_id is not None and self.attack is None:
             raise ValueError("a case_id needs the case's attack and injection_task_id")
+        if self.prereg_sha256 is not None and not _SHA256.fullmatch(self.prereg_sha256):
+            raise ValueError("prereg_sha256 must be 64 lowercase hex characters")
         return self
 
     @property
     def run_id(self) -> str:
         fields = self.model_dump(mode="json")
-        for name in ("attack", "injection_task_id", "case_id"):
+        for name in ("attack", "injection_task_id", "case_id", "prereg_sha256"):
             if fields[name] is None:
                 del fields[name]
         canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
