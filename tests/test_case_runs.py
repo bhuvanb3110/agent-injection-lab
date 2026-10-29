@@ -427,7 +427,7 @@ def test_expansion_order_is_repeat_then_case_then_model_then_topology() -> None:
     assert cells == expected
 
 
-# --- the dev-only guard ------------------------------------------------------------------------
+# --- test-split cases: expanded here, refused by `lab run` (tests/test_guard.py) ----------------
 
 
 def config_for(cases: Any, **overrides: Any) -> ExperimentConfig:
@@ -441,33 +441,26 @@ def config_for(cases: Any, **overrides: Any) -> ExperimentConfig:
 TEST_CASES = [i for i, s in CASE_SET.split_of.items() if s == "test"]
 
 
-def test_a_test_split_case_is_refused() -> None:
+def test_expanding_a_list_does_not_decide_the_split() -> None:
+    """Step 10 replaced D114's dev-only refusal in `expand` with the guard in `lab run`: which
+    split a case is in is the guard's business, so `expand` and `lab report` can count the runs
+    of any list."""
     assert len(TEST_CASES) == 157  # D112: 225 cases, 68 of them dev
-    with pytest.raises(ValueError, match="not in the dev split") as refused:
-        expand(config_for([TEST_CASES[0]]), load_providers())
-    assert TEST_CASES[0] in str(refused.value)
+    mixed = [AGENTDOJO_CHECKED["tool_output"], TEST_CASES[-1], TEST_CASES[0]]
+    specs = expand(config_for(mixed), load_providers())
+    assert [s.case_id for s in specs] == mixed
+    assert all(s.prereg_sha256 is None for s in specs)
 
 
-def test_one_test_case_among_dev_cases_refuses_the_whole_list() -> None:
-    mixed = [AGENTDOJO_CHECKED["tool_output"], TEST_CASES[-1], AGENTDOJO_CHECKED["file"]]
-    with pytest.raises(ValueError, match=r"1 of the listed cases are not in the dev split"):
-        expand(config_for(mixed), load_providers())
-
-
-def test_a_test_baseline_case_is_refused_too() -> None:
-    baseline = next(i for i in TEST_CASES if case(i).technique == "important_instructions")
-    with pytest.raises(ValueError, match="not in the dev split"):
-        expand(config_for([baseline]), load_providers())
-
-
-def test_the_guard_runs_before_any_run_is_made(tmp_path: Path) -> None:
+def test_the_guard_refuses_a_test_case_before_any_run_is_made(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     config = write_config(tmp_path / "bad.yaml", "bad", [TEST_CASES[0]], ["t1"])
-    with pytest.raises(ValueError, match="not in the dev split"):
-        main(["run", str(config), "--store", str(tmp_path / "runs.sqlite"),
-              "--cache", str(tmp_path / "cache.sqlite"), "--env-file", str(tmp_path / "no.env")])
-    assert not (tmp_path / "runs.sqlite").exists() or not RunStore(
-        tmp_path / "runs.sqlite"
-    ).run_ids("bad")
+    assert main(["run", str(config), "--store", str(tmp_path / "runs.sqlite"),
+                 "--cache", str(tmp_path / "cache.sqlite"),
+                 "--env-file", str(tmp_path / "no.env")]) == 2
+    assert "contains test-split cases" in capsys.readouterr().err
+    assert not (tmp_path / "runs.sqlite").exists()  # nothing was opened, let alone run
 
 
 @pytest.mark.parametrize("cases,message", [

@@ -227,6 +227,7 @@ def test_a_config_with_an_attack_hashes_differently() -> None:
 # --- end to end through the CLI ---
 
 
+@pytest.mark.usefixtures("no_guard")
 def test_cli_run_stores_attack_scores_and_report_keeps_them_out_of_benign_utility(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

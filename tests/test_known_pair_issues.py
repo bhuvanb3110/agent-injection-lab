@@ -4,6 +4,7 @@ import contextlib
 import io
 from pathlib import Path
 
+import pytest
 import yaml
 
 from lab.cli import main, report_text
@@ -50,6 +51,7 @@ def report_to_text(store: Path, config: Path, name: str) -> str:
     return out.getvalue()
 
 
+@pytest.mark.usefixtures("no_guard")
 def test_lab_report_prints_it_for_stored_runs_of_the_pair_only(tmp_path: Path) -> None:
     assert "Known issue, user_task_2 x injection_task_4:" in run_and_report(
         tmp_path, "pair", "injection_task_4"

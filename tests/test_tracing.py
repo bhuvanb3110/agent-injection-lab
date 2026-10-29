@@ -334,6 +334,7 @@ def run_attack_experiment(tmp_path: Path) -> Path:
     return store
 
 
+@pytest.mark.usefixtures("no_guard")
 def test_recomputing_hits_from_stored_trace_events_gives_the_stored_rows(
     tmp_path: Path,
 ) -> None:

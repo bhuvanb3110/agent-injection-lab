@@ -43,10 +43,11 @@ Keep this list current as commands are added.
 - `configs/experiments/step8_20b_j.yaml`, `step8_20b_c.yaml`, `step8_120b.yaml` (M3 step-8 dev runs, D105, D113–D115: case lists, dev cases only, run with `uv run lab run configs/experiments/<name>.yaml`; the runner refuses any case outside the dev split and places every listed case before the first call. Real Groq calls, resumable; run only when Bhuvan says so, in the order J, C, 120b. D114's two defects are fixed by D115)
 - `uv run lab budget [--model <provider/model_id or model_id>]` (per model: tokens and requests used in the last 24 h and left, and when the next 50,000 tokens free up; reads the run store, makes no model calls)
 - `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
-- `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab report <experiment> [<experiment> ...] [--blind]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab validate-rules [--store results/runs.sqlite] [--root <dir>]` (group A: pins, dataset, split, regeneration, golden fixtures; no store, run in CI. With `--store`, group B against the run store, local only. Exit 1 on any failure; D102, D116). `lab run` runs group A first for any experiment with test-split cases (and for pinned benign controls) and refuses it if A fails, so test cases stay refused until step 11 writes PREREGISTRATION.md. `lab report` hides test-screen outcomes until the freeze log holds a valid unblinding record; `--blind` hides every outcome. File formats: `docs/PREREG_FORMAT.md`
 - `uv run lab derive-attacker-effect <experiment>` (fills `attacker_effect` for attack runs stored before final environments were kept, from their executed writes; marked `derived_from_trace`; no model calls; D86)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
-- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` and `trace` take `--store`
+- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only), `--blind`; `label` and `trace` take `--store`
 
 ## Handoff summary
 
