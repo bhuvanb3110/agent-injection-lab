@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from lab.attacks.case_set import CASES_VERSION, DATA_DIR
 from lab.attacks.cases import (
     TOOL_DESCRIPTION_PREFIX,
     VECTOR_READ_TOOL,
@@ -49,9 +50,6 @@ from lab.attacks.pairs import PairCase, Placed, PlacementError, place_pairs
 from lab.attacks.predicates import LAB_PREDICATES
 from lab.attacks.sampling import Draw, SamplingError, format_marginals, levels_of, quota_sample
 from lab.domains.agentdojo_bridge import KNOWN_PAIR_ISSUES
-
-DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "attack_cases"
-CASES_VERSION = "v1"
 
 
 @dataclass(frozen=True)

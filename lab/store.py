@@ -60,6 +60,12 @@ class RunRecord(BaseModel):
     attacker_effect: bool | None = None
     attacker_effect_source: str | None = None
     final_environment: str | None = None  # JSON; None on runs stored before D86
+    # The attack case a run was built from (`spec.case_id`) and its stratifying fields, copied
+    # from the case when the run was made. None on every run that wasn't built from a case.
+    technique: str | None = None
+    channel: str | None = None
+    goal: str | None = None
+    t2_stratum: str | None = None
     # Derived from `marker_hits` (lab/tracing/markers.py:summarise). None: the run set no
     # markers, which is every milestone-1 run.
     propagated: bool | None = None
@@ -256,6 +262,11 @@ _ADDED_COLUMNS = [
     ("runs", "attacker_effect", "INTEGER"),  # D86
     ("runs", "attacker_effect_source", "TEXT"),  # D86
     ("runs", "final_environment", "TEXT"),  # D86
+    ("runs", "case_id", "TEXT"),  # M3 step 8
+    ("runs", "technique", "TEXT"),  # M3 step 8
+    ("runs", "channel", "TEXT"),  # M3 step 8
+    ("runs", "goal", "TEXT"),  # M3 step 8
+    ("runs", "t2_stratum", "TEXT"),  # M3 step 8
 ]
 
 
@@ -307,6 +318,11 @@ class RunStore:
             "failure_label": record.failure_label,
             "attack": spec.attack,
             "injection_task_id": spec.injection_task_id,
+            "case_id": spec.case_id,
+            "technique": record.technique,
+            "channel": record.channel,
+            "goal": record.goal,
+            "t2_stratum": record.t2_stratum,
             "attack_succeeded": record.attack_succeeded,
             "utility_under_attack": record.utility_under_attack,
             "attacker_effect": record.attacker_effect,
@@ -399,7 +415,7 @@ class RunStore:
             " attack_succeeded, utility_under_attack, propagated, infection_depth,"
             " marker_in_final_output, acted_on, reviewer_exposed, gate_leak, gate_leak_acted_on,"
             " ended_asking_user, out_of_scope_tool_calls, attacker_effect, attacker_effect_source,"
-            " final_environment FROM runs WHERE run_id = ?",
+            " final_environment, technique, channel, goal, t2_stratum FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -442,6 +458,10 @@ class RunStore:
             attacker_effect=_bool(row[27]),
             attacker_effect_source=row[28],
             final_environment=row[29],
+            technique=row[30],
+            channel=row[31],
+            goal=row[32],
+            t2_stratum=row[33],
             calls=calls,
             events=self.trace_events(run_id),
             marker_hits=self.marker_hits(run_id),

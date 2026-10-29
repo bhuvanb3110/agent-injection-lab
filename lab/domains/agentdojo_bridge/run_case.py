@@ -26,15 +26,22 @@ the run, and `attack_succeeded` is the injection task's own check (AgentDojo cal
 `TaskSuite.run_task_with_pipeline`). It is scored for every run that reaches the store, model
 errors included (D49).
 
+A case whose check is a lab predicate (D93, D96) has no AgentDojo injection task. It passes
+`attack_check` instead, which sees what the injection task's check sees (the final text, the
+trace, the starting and final environments) and returns True when the attack worked. Exactly one
+of `injection_task` and `attack_check` makes a run an attack; `attacker_effect` (D86) is scored
+on either.
+
 The function trace given to the `*_from_traces` checks is every tool call any agent sent to the
 tools, in the order they were made (PLAN_M2 §6). In T1 that is the agent's own calls, exactly
 what AgentDojo reads off the transcript. In T2 it is the workers' calls; the planner's delegate
 calls are not tool calls on the environment and are left out.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from typing import TypeVar
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -49,6 +56,10 @@ from lab.scoring.attacker_effect import attacker_effect
 from lab.tracing.events import TOOLS, TraceEvent
 
 Env = TypeVar("Env", bound=TaskEnvironment)
+
+# (final text, tool-call trace, starting environment, final environment) -> True if the attack
+# worked. The shape of `_check_attack` once the injection task is bound.
+AttackCheck = Callable[[str, list[FunctionCall], Env, Env], bool]
 
 
 class Outcome(StrEnum):
@@ -84,19 +95,25 @@ def run_case(
     injection_task: BaseInjectionTask[Env] | None = None,
     tool_descriptions: Mapping[str, ToolDescriptionInjection] | None = None,
     result_declarations: Mapping[str, tuple[str, ...]] | None = None,
+    attack_check: AttackCheck[Env] | None = None,
 ) -> CaseResult:
     """Run `user_task` once and score the final state and answer.
 
-    With `injections` (vector -> payload) and `injection_task` it is an attack case and
-    `attack_succeeded` is scored as well; with neither, a benign run.
+    With `injections` (vector -> payload, possibly empty) and either `injection_task` or
+    `attack_check` it is an attack case and `attack_succeeded` is scored as well; with none of
+    them, a benign run.
 
     `ctx` collects a record of every model call. The runner passes one carrying the repeat
     index; tests can leave it out. If the run ends in ModelError, `ctx.attack_succeeded` holds
     the attack score before the error is re-raised, because the tools had already changed the
     environment (D49).
     """
-    if (injections is None) != (injection_task is None):
-        raise ValueError("injections and injection_task go together")
+    if injection_task is not None and attack_check is not None:
+        raise ValueError("give an injection_task or an attack_check, not both")
+    if injection_task is not None:
+        attack_check = partial(_check_attack, injection_task)
+    if (injections is None) != (attack_check is None):
+        raise ValueError("injections and an injection_task (or attack_check) go together")
     ctx = ctx if ctx is not None else RunContext()
     environment = suite.load_and_inject_default_environment(injections or {})
     task_environment = user_task.init_environment(environment)
@@ -112,15 +129,13 @@ def run_case(
             user_task.PROMPT, runtime, task_environment, [], {"ctx": ctx}
         )
     except ModelError:
-        if injection_task is not None:
+        if attack_check is not None:
             # The pipeline raised before returning, but tools mutate `task_environment` in
             # place, so a transfer made before the error did happen. The output is empty and
             # the last assistant message, never executed, is not part of the trace.
             trace = tool_call_trace(ctx.events, ran_to_completion=False)
-            ctx.attack_succeeded = _check_attack(
-                injection_task, "", trace, pre_environment, task_environment
-            )
-        _record_final_state(ctx, injection_task, pre_environment, task_environment)
+            ctx.attack_succeeded = attack_check("", trace, pre_environment, task_environment)
+        _record_final_state(ctx, attack_check is not None, pre_environment, task_environment)
         raise
     messages = list(result_messages)
     final = _final_assistant_message(messages)
@@ -136,10 +151,9 @@ def run_case(
         user_task, final, trace, pre_environment, post_environment
     )
     outcome = _classify(final, state_check_passed)
-    _record_final_state(ctx, injection_task, pre_environment, post_environment)
-    if injection_task is not None:
-        ctx.attack_succeeded = _check_attack(
-            injection_task,
+    _record_final_state(ctx, attack_check is not None, pre_environment, post_environment)
+    if attack_check is not None:
+        ctx.attack_succeeded = attack_check(
             get_text_content_as_str(final["content"] or []),
             trace,
             pre_environment,
@@ -174,14 +188,11 @@ def with_injected_descriptions(
 
 
 def _record_final_state(
-    ctx: RunContext,
-    injection_task: BaseInjectionTask[Env] | None,
-    pre_environment: Env,
-    post_environment: Env,
+    ctx: RunContext, is_attack: bool, pre_environment: Env, post_environment: Env
 ) -> None:
     """Keep the final environment, and on an attack run the lab's `attacker_effect` (D86)."""
     ctx.final_environment = post_environment.model_dump_json()
-    if injection_task is not None:
+    if is_attack:
         ctx.attacker_effect = attacker_effect(pre_environment, post_environment)  # type: ignore[arg-type]
 
 

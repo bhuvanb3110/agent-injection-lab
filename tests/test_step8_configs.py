@@ -1,4 +1,5 @@
 """The step-8 dev configs (PLAN_M3 §8, D105): configs only, nothing is run here.
+(Their expansion into runs is tested in tests/test_case_runs.py.)
 
 Each one names case IDs. They must be the grid's sets J and C, dev cases only, and add up to the
 plan's run counts (20b 54 + 10, 120b 28).
@@ -14,8 +15,7 @@ import yaml
 
 from lab.attacks.composition import load_composition
 from lab.attacks.dataset import BANKING, DATA_DIR, Dataset, build_dataset
-from lab.config import ExperimentConfig, expand, load_experiment
-from lab.models.providers import load_providers
+from lab.config import ExperimentConfig, load_experiment
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs" / "experiments"
 NAMES = ("step8_20b_j", "step8_20b_c", "step8_120b")
@@ -97,9 +97,3 @@ def test_an_empty_case_list_is_refused() -> None:
     raw["cases"] = []
     with pytest.raises(ValueError, match="at least one case"):
         ExperimentConfig.model_validate(raw)
-
-
-def test_running_a_case_list_is_not_built_yet() -> None:
-    """The step-8 run needs the runner to place the new payloads; until then expand() says so."""
-    with pytest.raises(ValueError, match="not built"):
-        expand(load("step8_120b"), load_providers())

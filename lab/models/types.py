@@ -150,6 +150,17 @@ class ToolDescriptionInjection:
     declared: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class CaseFields:
+    """What the run record keeps of the attack case a run was built from, so a report can
+    stratify without reading the dataset (PLAN_M3 step 8). The case ID itself is in the spec."""
+
+    technique: str
+    channel: str
+    goal: str
+    t2_stratum: str
+
+
 @dataclass
 class RunContext:
     """Per-run accumulator, passed through the pipeline in `extra_args["ctx"]` (D17)."""
@@ -187,6 +198,8 @@ class RunContext:
     # The strings to look for in the trace, set by whoever builds the run. None: not searched,
     # and the run's marker columns stay NULL.
     markers: list[Marker] | None = None
+    # Set by the runner for a run built from an attack case; None for every other run.
+    case_fields: CaseFields | None = None
 
     @property
     def messages(self) -> list[ChatMessage]:
