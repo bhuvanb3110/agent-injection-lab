@@ -1,0 +1,15 @@
+# M4 benign controls, gpt-oss-20b: all 16 Banking user tasks without an attack, six topologies, repeat 0 = 96 runs (D99).
+# Registered in PREREGISTRATION.md (pinned): `lab run` refuses it until `lab validate-rules` group A
+# passes, and stamps prereg_sha256 on every run. Resumable: rerun the same command after a daily cap.
+#   uv run lab run configs/experiments/m4_benign_20b.yaml
+name: m4_benign_20b
+description: "M4 benign controls, gpt-oss-20b: 16 tasks, T1-T5-summary, repeat 0."
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: all
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: 1
+seed: 20261101
+max_tokens: 2048

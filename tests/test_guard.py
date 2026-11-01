@@ -85,14 +85,16 @@ def test_a_dev_case_experiment_passes_untouched_even_without_a_prereg(tmp_path: 
     "repeat",
 ])
 def test_an_experiment_with_a_test_case_is_refused_without_a_prereg(
-    tmp_path: Path, cases: object
+    repo: Path, tmp_path: Path, cases: object
 ) -> None:
+    # A root without PREREGISTRATION.md: the real root has one since step 11.
+    (repo / "PREREGISTRATION.md").unlink()
     body = experiment(cases=cases)
     with pytest.raises(ConfigError, match=r"contains test-split cases.*does not exist"):
-        check_run(config_of(body), write(tmp_path / "t.yaml", body), PROJECT_ROOT)
+        check_run(config_of(body), write(tmp_path / "t.yaml", body), repo)
 
 
-def test_an_attack_config_is_judged_by_the_split_of_its_pairs(tmp_path: Path) -> None:
+def test_an_attack_config_is_judged_by_the_split_of_its_pairs(repo: Path, tmp_path: Path) -> None:
     """Milestone 2's `attack:` configs have no case list: each (user task, injection task) is the
     AgentDojo case of its pair."""
     def attack(pair: tuple[str, str]) -> dict[str, Any]:
@@ -101,11 +103,12 @@ def test_an_attack_config_is_judged_by_the_split_of_its_pairs(tmp_path: Path) ->
 
     screen_pair = tuple(TEST_CASE.split(":")[2:4])
     dev, screen, confirm = attack(DEV_PAIR), attack(screen_pair), attack(TEST_PAIR)  # type: ignore[arg-type]
-    assert check_run(config_of(dev), write(tmp_path / "d.yaml", dev), PROJECT_ROOT) is None
+    (repo / "PREREGISTRATION.md").unlink()  # the real root has one since step 11
+    assert check_run(config_of(dev), write(tmp_path / "d.yaml", dev), repo) is None
     with pytest.raises(ConfigError, match="contains test-split cases"):
-        check_run(config_of(screen), write(tmp_path / "s.yaml", screen), PROJECT_ROOT)
+        check_run(config_of(screen), write(tmp_path / "s.yaml", screen), repo)
     with pytest.raises(ConfigError, match="contains test-confirm cases"):
-        check_run(config_of(confirm), write(tmp_path / "c.yaml", confirm), PROJECT_ROOT)
+        check_run(config_of(confirm), write(tmp_path / "c.yaml", confirm), repo)
 
 
 @pytest.mark.parametrize("cases", [[CONFIRM_CASE], [TEST_CASE, CONFIRM_CASE], "banking_v1"])
@@ -154,11 +157,20 @@ def test_a_broken_chain_keeps_test_confirm_refused(
         check_run(config_of(body), write(tmp_path / "c.yaml", body), repo)
 
 
-def test_every_checked_in_experiment_config_is_dev_only_or_benign() -> None:
-    """So the guard changes nothing for the configs that exist today (CLAUDE.md's commands)."""
+def test_every_checked_in_experiment_config_is_dev_only_or_a_registered_m4_one() -> None:
+    """The guard changes nothing for the configs that existed before step 11 (CLAUDE.md's
+    commands). The six M4 configs are pinned in the prereg, so they are registered: they get the
+    prereg's hash (group A is stubbed here; the real check is `lab validate-rules`)."""
+
+    stamped = {}
     for path in sorted((PROJECT_ROOT / "configs" / "experiments").glob("*.yaml")):
         config = ExperimentConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-        assert check_run(config, path, PROJECT_ROOT) is None, path.name
+        stamped[path.name] = check_run(config, path, PROJECT_ROOT, group_a=lambda root: [])
+    expected = prereg_sha256(PROJECT_ROOT)
+    assert expected is not None
+    m4 = {name for name in stamped if name.startswith("m4_")}
+    assert len(m4) == 6
+    assert {n: h for n, h in stamped.items() if h is not None} == {n: expected for n in m4}
 
 
 def test_an_unknown_case_or_set_is_refused_not_guessed(tmp_path: Path) -> None:
@@ -296,8 +308,11 @@ def run_args(tmp_path: Path) -> list[str]:
 
 
 def test_lab_run_refuses_test_cases_and_creates_nothing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str]
 ) -> None:
+    (repo / "PREREGISTRATION.md").unlink()  # the real root has one since step 11
+    monkeypatch.setattr(cli, "PROJECT_ROOT", repo)
     config = write(tmp_path / "t.yaml", experiment(cases=[TEST_CASE]))
     assert main(["run", str(config), *run_args(tmp_path)]) == 2
     assert "Test cases stay refused until it is written and committed" in capsys.readouterr().err
@@ -379,7 +394,8 @@ def test_an_amendment_between_two_invocations_neither_reruns_nor_restamps(
 
 
 def test_there_is_no_flag_environment_variable_or_config_field_that_skips_the_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`no_guard` is a pytest fixture in tests/conftest.py and nothing else: it patches the name
     `check_run` inside `lab.cli` for one test. Nothing under lab/ mentions it, `lab run` has no
@@ -388,6 +404,8 @@ def test_there_is_no_flag_environment_variable_or_config_field_that_skips_the_gu
     for path in lab_dir.rglob("*.py"):
         text = path.read_text(encoding="utf-8").lower()
         assert "no_guard" not in text and "noguard" not in text and "skip_guard" not in text, path
+    (repo / "PREREGISTRATION.md").unlink()  # the real root has one since step 11
+    monkeypatch.setattr(cli, "PROJECT_ROOT", repo)
     for variable in ("LAB_NO_GUARD", "NO_GUARD", "LAB_SKIP_GUARD"):
         monkeypatch.setenv(variable, "1")
     (tmp_path / "x.env").write_text("LAB_NO_GUARD=1\nNO_GUARD=true\n", encoding="utf-8")

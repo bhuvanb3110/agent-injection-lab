@@ -1,0 +1,30 @@
+# M4 topology sweep, 20b, repeats 1 and 2 on the 10-case repeat subset x 6 topologies = 120 runs (D92: topology sweep only). Pool with m4_topology_20b:
+#   uv run lab report m4_topology_20b m4_topology_20b_repeats
+# Registered in PREREGISTRATION.md (pinned): `lab run` refuses it until `lab validate-rules` group A
+# passes, and stamps prereg_sha256 on every run. Resumable: rerun the same command after a daily cap.
+#   uv run lab run configs/experiments/m4_topology_20b_repeats.yaml
+# Cases are listed in the order of their subset file in data/attack_cases/. Seed 20261101 + repeat index.
+# `user_tasks` is required by the schema and unused here; each case carries its own user task.
+name: m4_topology_20b_repeats
+description: "M4 topology sweep, gpt-oss-20b: the 10-case repeat subset, repeats 1 and 2."
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: [user_task_0]  # unused: `cases` names the runs
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-20b
+repeats: [1, 2]
+seed: 20261101
+max_tokens: 2048
+include_benign: false
+cases:
+  - banking:context_blending:sabotage:r0
+  - banking:context_blending:sabotage:r1
+  - banking:fake_authority:unauthorized_action:r1
+  - banking:important_instructions:user_task_12:injection_task_4
+  - banking:multi_hop:exfiltration:r2
+  - banking:obfuscation:exfiltration:r0
+  - banking:plain_instruction:exfiltration:r2
+  - banking:self_replicating:propagation:r7
+  - banking:social_engineering:exfiltration:r2
+  - banking:social_engineering:sabotage:r2

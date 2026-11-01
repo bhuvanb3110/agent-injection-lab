@@ -453,8 +453,18 @@ def test_expanding_a_list_does_not_decide_the_split() -> None:
 
 
 def test_the_guard_refuses_a_test_case_before_any_run_is_made(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A repository root with the dataset and no PREREGISTRATION.md: the real root has one since
+    # step 11, and then a test-screen case is allowed once group A passes.
+    import shutil
+
+    from lab import cli
+
+    root = tmp_path / "root"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "data" / "attack_cases",
+                    root / "data" / "attack_cases")
+    monkeypatch.setattr(cli, "PROJECT_ROOT", root)
     config = write_config(tmp_path / "bad.yaml", "bad", [TEST_CASES[0]], ["t1"])
     assert main(["run", str(config), "--store", str(tmp_path / "runs.sqlite"),
                  "--cache", str(tmp_path / "cache.sqlite"),

@@ -10,7 +10,9 @@ Covered, each by a table of (input, frozen answer):
 - `ended_with_question` and `requested_user_input` (D73, D74);
 - `attacker_effect` (D86);
 - `summary_parser_v1` (D65), also by the digest of the parser file;
-- the sabotage constant and `lab_sabotage_0` (D96, D109).
+- the sabotage constant and `lab_sabotage_0` (D96, D109);
+- the rendered payload text of all 225 cases, as one digest (E1 of the step-11 review): wording,
+  goal text, canary and encoding are code, not data, so nothing else freezes what a case plants.
 
 The same file holds the numbers group B re-checks against the run store and the label files
 (`rechecks`, D89): D74's confusion table and D88's agreement.
@@ -95,6 +97,11 @@ class D88Recheck(_Strict):
     agree: int
 
 
+class PayloadsSection(_Strict):
+    n: int  # the number of cases rendered
+    sha256: str  # `payload_digest` of them
+
+
 class Rechecks(_Strict):
     d74: D74Recheck
     d88: D88Recheck
@@ -108,6 +115,7 @@ class Golden(_Strict):
     summary_parser_digest: str
     summary_parser: list[SummaryCase]
     sabotage: SabotageSection
+    payloads: PayloadsSection
     rechecks: Rechecks
 
 
@@ -269,12 +277,58 @@ def _sabotage(golden: Golden) -> list[str]:
     return problems
 
 
-SECTIONS: dict[str, Callable[[Golden], list[str]]] = {
-    "normalise": _normalise,
-    "ended_with_question and requested_user_input": _final_answers,
-    "attacker_effect": _attacker_effect,
-    "summary_parser_v1": _summary_parser,
-    "sabotage": _sabotage,
+def payload_digest(directory: Path) -> tuple[int, str]:
+    """(number of cases, SHA-256) of everything the runner would plant for each case of the
+    dataset in `directory`, built by `plan_case` as the runner builds it: the environment
+    injections, the tool-description injections, the declared decoded markers and the markers.
+    Each case's wording is its own split's (dev or test). Cases are taken in ID order and each is
+    one line of canonical JSON, so the digest depends on what is planted and nothing else."""
+    import hashlib
+    import json
+
+    from lab.attacks.case_plan import plan_case
+    from lab.attacks.case_set import read_case_set
+    from lab.domains.agentdojo_bridge import load_banking_suite
+
+    case_set = read_case_set("banking", directory)
+    suite = load_banking_suite()
+    lines = []
+    for case_id in sorted(case_set.cases):
+        plan = plan_case(suite, case_set.cases[case_id], case_set.split_of[case_id])
+        planted = {
+            "id": case_id,
+            "split": case_set.split_of[case_id],
+            "injections": plan.injections,
+            "tool_descriptions": {
+                tool: [d.text, list(d.declared)] for tool, d in plan.tool_descriptions.items()
+            },
+            "result_declarations": {k: list(v) for k, v in plan.result_declarations.items()},
+            "markers": [[m.kind, m.value] for m in plan.markers],
+        }
+        lines.append(json.dumps(planted, sort_keys=True, separators=(",", ":"),
+                                ensure_ascii=True))
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    return len(lines), digest
+
+
+def _payloads(golden: Golden, root: Path) -> list[str]:
+    n, digest = payload_digest(root / "data" / "attack_cases")
+    problems = []
+    if n != golden.payloads.n:
+        problems.append(f"{n} cases rendered, frozen {golden.payloads.n}")
+    if digest != golden.payloads.sha256:
+        problems.append(f"the rendered payloads hash to {digest}, frozen {golden.payloads.sha256}: "
+                        "a wording, goal text, canary or encoding changed what a case plants")
+    return problems
+
+
+SECTIONS: dict[str, Callable[[Golden, Path], list[str]]] = {
+    "normalise": lambda g, root: _normalise(g),
+    "ended_with_question and requested_user_input": lambda g, root: _final_answers(g),
+    "attacker_effect": lambda g, root: _attacker_effect(g),
+    "summary_parser_v1": lambda g, root: _summary_parser(g),
+    "sabotage": lambda g, root: _sabotage(g),
+    "payloads": _payloads,
 }
 
 
@@ -287,7 +341,7 @@ def golden_problems(root: Path) -> list[str]:
     problems = []
     for name, run in SECTIONS.items():
         try:
-            problems += [f"{name}: {p}" for p in run(golden)]
+            problems += [f"{name}: {p}" for p in run(golden, root)]
         except Exception as error:  # a rule that raises has changed behaviour too
             problems.append(f"{name}: raised {type(error).__name__}: {error}")
     return problems

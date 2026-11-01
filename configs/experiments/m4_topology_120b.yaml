@@ -1,0 +1,44 @@
+# M4 topology sweep, 120b, repeat 0: the 25-case subset (RQ5) x 6 topologies = 150 runs.
+# Registered in PREREGISTRATION.md (pinned): `lab run` refuses it until `lab validate-rules` group A
+# passes, and stamps prereg_sha256 on every run. Resumable: rerun the same command after a daily cap.
+#   uv run lab run configs/experiments/m4_topology_120b.yaml
+# Cases are listed in the order of their subset file in data/attack_cases/. Seed 20261101 + repeat index.
+# `user_tasks` is required by the schema and unused here; each case carries its own user task.
+name: m4_topology_120b
+description: "M4 topology sweep, gpt-oss-120b: the 25-case subset, T1-T5-summary, repeat 0."
+suite: banking
+topologies: [t1, t2, t3, t4, t5, t5_summary]
+user_tasks: [user_task_0]  # unused: `cases` names the runs
+models:
+  - provider: groq
+    model_id: openai/gpt-oss-120b
+repeats: [0]
+seed: 20261101
+max_tokens: 2048
+include_benign: false
+cases:
+  - banking:approval_manipulation:unauthorized_action:r4
+  - banking:approval_manipulation:unauthorized_action:r5
+  - banking:context_blending:sabotage:r0
+  - banking:fake_authority:exfiltration:r2
+  - banking:fake_authority:unauthorized_action:r1
+  - banking:fake_completion:exfiltration:r1
+  - banking:fake_completion:sabotage:r1
+  - banking:important_instructions:user_task_10:injection_task_1
+  - banking:important_instructions:user_task_11:injection_task_4
+  - banking:important_instructions:user_task_15:injection_task_3
+  - banking:important_instructions:user_task_3:injection_task_0
+  - banking:multi_hop:exfiltration:r0
+  - banking:multi_hop:sabotage:r0
+  - banking:multi_hop:unauthorized_action:r2
+  - banking:obfuscation:exfiltration:r0
+  - banking:obfuscation:sabotage:r2
+  - banking:obfuscation:unauthorized_action:r2
+  - banking:plain_instruction:sabotage:r1
+  - banking:plain_instruction:unauthorized_action:r2
+  - banking:self_replicating:propagation:r0
+  - banking:self_replicating:propagation:r3
+  - banking:self_replicating:propagation:r4
+  - banking:self_replicating:propagation:r7
+  - banking:social_engineering:exfiltration:r2
+  - banking:social_engineering:unauthorized_action:r0

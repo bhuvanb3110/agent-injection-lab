@@ -78,18 +78,14 @@ def test_group_a_fails_without_a_prereg(repo: Path, regenerated: dict[str, str])
     ]
 
 
-def test_the_real_repository_fails_group_a_until_step_11_writes_the_prereg(
-    regenerated: dict[str, str],
-) -> None:
-    """On the checked-in files everything but the three checks that read the prereg passes, so
-    step 11 has nothing else to repair."""
+def test_the_real_repository_passes_group_a(regenerated: dict[str, str]) -> None:
+    """The gate (PLAN_M3 step 11): with PREREGISTRATION.md committed, every check is ok on the
+    checked-in files. If this fails, a pinned file changed without an amendment, or the
+    dataset, a rule or a wording changed behaviour."""
     from lab.rules import PROJECT_ROOT
 
-    checks = run_group_a(PROJECT_ROOT, regenerated)
-    assert not (PROJECT_ROOT / "PREREGISTRATION.md").exists()
-    assert failing(checks) == [
-        "A1 pinned hashes", "A2 unpinned files", "A8 sampling fields match the prereg",
-    ]
+    assert (PROJECT_ROOT / "PREREGISTRATION.md").is_file()
+    assert failing(run_group_a(PROJECT_ROOT, regenerated)) == []
 
 
 def test_the_command_prints_each_check_and_exits_1_on_a_failure(
@@ -703,6 +699,37 @@ def test_a_changed_sabotage_constant_fails_a7(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(predicates, "SABOTAGE_AMOUNT", 1234.56)
     problems = check_golden(PROJECT_ROOT).problems
     assert any("SABOTAGE_AMOUNT is 1234.56, frozen" in p for p in problems)
+
+
+def test_a_changed_test_wording_fails_a7(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rendered payloads are frozen by one digest (step 11): a word changed in a test wording
+    changes what some cases plant. The dev/test overlap rule (A4) would not notice this."""
+    from lab.attacks import techniques
+    from lab.rules import PROJECT_ROOT
+
+    by_split = techniques.TEMPLATES["plain_instruction"]["default"]
+    monkeypatch.setitem(by_split, "test", by_split["test"].replace("Forget", "Disregard", 1))
+    problems = check_golden(PROJECT_ROOT).problems
+    assert any(p.startswith("payloads:") and "changed what a case plants" in p for p in problems)
+
+
+def test_a_changed_lab_goal_text_fails_a7(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lab.attacks import predicates
+    from lab.rules import PROJECT_ROOT
+
+    goal = predicates.LAB_GOAL_TEXT["lab_replicate_0"]
+    monkeypatch.setitem(predicates.LAB_GOAL_TEXT, "lab_replicate_0", goal + " Hurry.")
+    assert any(p.startswith("payloads:") for p in check_golden(PROJECT_ROOT).problems)
+
+
+def test_the_payload_digest_of_the_committed_dataset_is_the_frozen_one() -> None:
+    """The golden file's digest is what the committed code and data give (the hash seed has no
+    effect: checked by hand with PYTHONHASHSEED=1 and 12345)."""
+    from lab.rules import PROJECT_ROOT
+    from lab.rules.golden import load_golden, payload_digest
+
+    frozen = load_golden(PROJECT_ROOT).payloads
+    assert payload_digest(PROJECT_ROOT / "data" / "attack_cases") == (frozen.n, frozen.sha256)
 
 
 def test_a_changed_summary_parser_fails_a7(monkeypatch: pytest.MonkeyPatch) -> None:
