@@ -236,7 +236,7 @@ def test_cli_run_stores_attack_scores_and_report_keeps_them_out_of_benign_utilit
         "models": [{"provider": "fake", "model_id": "ground-truth"},
                    {"provider": "fake", "model_id": "obedient"}],
         "repeats": 1, "seed": 5, "max_tokens": 2048,
-        "attack": {"injection_tasks": ["injection_task_4", "injection_task_7"]},
+        "attack": {"injection_tasks": ["injection_task_4", "injection_task_3"]},
     }))
     store = tmp_path / "runs.sqlite"
     args = ["--store", str(store), "--cache", str(tmp_path / "cache.sqlite"),
@@ -252,10 +252,10 @@ def test_cli_run_stores_attack_scores_and_report_keeps_them_out_of_benign_utilit
     assert rows == {
         ("ground-truth", None, "solved", 1, None, None),
         ("ground-truth", "injection_task_4", "solved", 1, 0, 1),
-        ("ground-truth", "injection_task_7", "solved", 1, 0, 1),
+        ("ground-truth", "injection_task_3", "solved", 1, 0, 1),
         ("obedient", None, "solved", 1, None, None),
         ("obedient", "injection_task_4", "solved", 1, 1, 0),
-        ("obedient", "injection_task_7", "solved", 1, 1, 0),
+        ("obedient", "injection_task_3", "solved", 1, 1, 0),
     }
     attacks = db.execute("SELECT DISTINCT attack FROM runs WHERE attack IS NOT NULL")
     assert list(attacks) == [(ATTACK_NAME,)]

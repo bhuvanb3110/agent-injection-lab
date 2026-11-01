@@ -67,6 +67,7 @@ class ExperimentRunner:
         cache: ResponseCache,
         clock: Clock,
         environ: Mapping[str, str],
+        prereg_sha256: str | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -76,7 +77,7 @@ class ExperimentRunner:
         self.case_set: CaseSet | None = (
             committed_case_set(config.suite) if config.cases is not None else None
         )
-        self.specs = expand(config, providers, self.case_set)
+        self.specs = expand(config, providers, self.case_set, prereg_sha256)
         self.suite = load_banking_suite()
         if self.case_set is not None:
             self.check_cases_load()

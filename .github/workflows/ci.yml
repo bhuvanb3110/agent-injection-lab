@@ -29,3 +29,10 @@ jobs:
 
       - name: Tests
         run: uv run pytest
+
+      # Group A of `validate-rules` (PLAN_M3 §5, D102): no store, no model, no key. It fails
+      # while PREREGISTRATION.md does not exist (step 11 writes it), and after that on any
+      # tampered pin, unpinned data file, split or nesting violation, regeneration mismatch or
+      # changed golden behaviour.
+      - name: Validate rules (group A)
+        run: uv run lab validate-rules

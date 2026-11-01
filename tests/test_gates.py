@@ -175,6 +175,7 @@ def test_approved_handoffs_reach_the_planner_byte_identical() -> None:
         assert json_safe(t3.transcripts[agent]) == json_safe(t2.transcripts[agent]), agent
 
 
+@pytest.mark.usefixtures("no_guard")
 def test_an_approving_reviewer_leaves_t3s_agent_calls_identical_to_t2s_so_they_hit_the_cache(
     tmp_path: Path,
 ) -> None:

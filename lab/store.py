@@ -13,6 +13,10 @@ Tables (DECISIONS.md D2, D25, D51):
   (PLAN_M2 §7, D66). Computed from the two runs' stored request keys only.
 - `requests`: every real request sent to a provider, including failed attempts. The rate
   limiter reads it back on start-up so daily usage survives a restart.
+- `outcome_views`: one row each time `lab report` or `lab trace` showed the outcomes of
+  blinded runs (test-screen or test-confirm), with the time and the set. `lab validate-rules
+  --store` checks that none is earlier than that set's unblinding entry (D103, D117). Nothing
+  is written for any other view.
 
 Rows are only inserted, never updated: a run ID that is already present is a bug, not a retry.
 The one exception is a run's failure label, an annotation added after scoring (D43).
@@ -133,6 +137,29 @@ def prefix_divergence(
     return PrefixDivergence(run_id, parent_run_id, None if same else shared, shared)
 
 
+@dataclass(frozen=True)
+class RunIndexRow:
+    """What `lab validate-rules --store` needs of a run, without loading its trace."""
+
+    run_id: str
+    experiment: str
+    config_hash: str
+    case_id: str | None
+    user_task_id: str
+    injection_task_id: str | None
+    started_at: str  # ISO 8601 UTC
+    prereg_sha256: str | None
+
+
+@dataclass(frozen=True)
+class OutcomeView:
+    viewed_at: str  # ISO 8601 UTC
+    command: str  # "report" or "trace"
+    detail: str  # the experiments, or the run ID
+    scope: str  # "test_screen" or "test_confirm": which blinded set
+    runs: int  # how many of its runs' outcomes were shown
+
+
 def _total(values: Sequence[int | None]) -> int | None:
     return None if None in values else sum(v for v in values if v is not None)
 
@@ -236,6 +263,14 @@ CREATE TABLE IF NOT EXISTS prefix_divergence (
     divergence_call_idx INTEGER,
     n_shared_calls INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS outcome_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    viewed_at TEXT NOT NULL,
+    command TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    runs INTEGER NOT NULL
+);
 """
 
 # Columns added after the first stores were written, as (table, column, type). A store created
@@ -267,6 +302,7 @@ _ADDED_COLUMNS = [
     ("runs", "channel", "TEXT"),  # M3 step 8
     ("runs", "goal", "TEXT"),  # M3 step 8
     ("runs", "t2_stratum", "TEXT"),  # M3 step 8
+    ("runs", "prereg_sha256", "TEXT"),  # M3 step 10
 ]
 
 
@@ -319,6 +355,7 @@ class RunStore:
             "attack": spec.attack,
             "injection_task_id": spec.injection_task_id,
             "case_id": spec.case_id,
+            "prereg_sha256": spec.prereg_sha256,
             "technique": record.technique,
             "channel": record.channel,
             "goal": record.goal,
@@ -573,6 +610,44 @@ class RunStore:
 
     def runs(self, experiment: str) -> list[RunRecord]:
         return [self.get_run(run_id) for run_id in self.run_ids(experiment)]
+
+    def run_index(self) -> list[RunIndexRow]:
+        """Every stored run, without its trace, oldest first."""
+        rows = self._db.execute(
+            "SELECT run_id, experiment, config_hash, case_id, user_task_id, injection_task_id,"
+            " started_at, prereg_sha256 FROM runs ORDER BY started_at, run_id"
+        )
+        return [RunIndexRow(*row) for row in rows]
+
+    # --- the blinding log (D103) ---
+
+    def log_outcome_view(
+        self, viewed_at: str, command: str, detail: str, scope: str, runs: int
+    ) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO outcome_views (viewed_at, command, detail, scope, runs)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (viewed_at, command, detail, scope, runs),
+            )
+
+    def outcome_views(self) -> list[OutcomeView]:
+        rows = self._db.execute(
+            "SELECT viewed_at, command, detail, scope, runs FROM outcome_views ORDER BY id"
+        )
+        return [OutcomeView(*row) for row in rows]
+
+    def judge_verdicts(self) -> list[tuple[str, str]]:
+        """(run ID, scoring time in ISO 8601 UTC) of every judge verdict, or [] while there is no
+        judge. The judge is built after the gate (PLAN_M3 step 7); the contract it must keep for
+        the registration check is a `judge_verdicts` table with at least these two columns."""
+        exists = self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'judge_verdicts'"
+        ).fetchone()
+        if exists is None:
+            return []
+        rows = self._db.execute("SELECT run_id, scored_at FROM judge_verdicts ORDER BY scored_at")
+        return [(r[0], r[1]) for r in rows]
 
     # --- provider requests (rate-limit accounting) ---
 

@@ -1,7 +1,9 @@
-"""`lab run <experiment.yaml>`, `lab report <experiment>...` and `lab label <labels.yaml>` (D35).
+"""`lab run <experiment.yaml>`, `lab report <experiment>...` and `lab label <labels.yaml>` (D35),
+and `lab validate-rules` (D102).
 
 `lab run` is resumable: runs already in the store are skipped, so after a daily cap the same
-command, run again once the 24 h window has room, carries on where it stopped.
+command, run again once the 24 h window has room, carries on where it stopped. It refuses an
+experiment with test-split cases unless `validate-rules` group A passes (lab.rules.guard).
 
 Secrets: keys are read from `.env` (or the real environment) into a dict handed to the client.
 They are never printed, and never put in os.environ, a cache key, a trace or a run record.
@@ -13,6 +15,7 @@ import argparse
 import os
 import sys
 from collections.abc import Mapping, Sequence, Set
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -24,7 +27,13 @@ from lab.domains.agentdojo_bridge import DO_NOTHING_PASSES, KNOWN_ISSUES, KNOWN_
 from lab.domains.agentdojo_bridge.banking import load_banking_suite
 from lab.errors import ConfigError
 from lab.models.cache import ResponseCache
-from lab.models.providers import load_providers
+from lab.models.providers import Price, load_providers
+from lab.rules import PROJECT_ROOT
+from lab.rules.checks import format_checks, run_group_a
+from lab.rules.guard import blinded_scope, check_run
+from lab.rules.prereg import blinding_state
+from lab.rules.scope import load_split_data
+from lab.rules.store_checks import run_group_b
 from lab.runner import ExperimentRunner, TokenBudget, model_key
 from lab.scheduler.clock import SystemClock
 from lab.scheduler.spec import RunSpec
@@ -77,6 +86,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="with one experiment: config to count pending runs against "
         "(default: configs/experiments/<name>.yaml)",
     )
+    report.add_argument(
+        "--blind",
+        action="store_true",
+        help="show only counts, errors, tokens and cost, never an outcome (D103). Without it, "
+        "the outcomes of test-screen runs are hidden anyway until the freeze log holds a valid "
+        "unblinding record",
+    )
 
     label = commands.add_parser("label", help="write hand failure labels into the run store")
     label.add_argument("labels", type=Path, help="configs/labels/<experiment>.yaml")
@@ -96,6 +112,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     budget.add_argument("--model", default=None, help="only this model (provider/model_id, or id)")
     budget.add_argument("--store", type=Path, default=DEFAULT_STORE)
 
+    validate = commands.add_parser(
+        "validate-rules",
+        help="group A (no store; CI): pins, dataset, split, regeneration, golden fixtures. "
+        "With --store, also group B (local): the hand-validated rules against the store, and "
+        "the registration order. Makes no model calls",
+    )
+    validate.add_argument("--store", type=Path, default=None,
+                          help="also run group B against this run store")
+    validate.add_argument("--root", type=Path, default=None,
+                          help="the repository root to validate (default: this repository)")
+
     derive = commands.add_parser(
         "derive-attacker-effect",
         help="fill attacker_effect for attack runs stored before final environments were kept, "
@@ -110,6 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_derive_attacker_effect(args.experiment, args.store)
         if args.command == "run":
             return cmd_run(args.config, args.store, args.cache, args.env_file)
+        if args.command == "validate-rules":
+            return cmd_validate_rules(args.root or PROJECT_ROOT, args.store)
         if args.command == "budget":
             return cmd_budget(args.model, args.store)
         if args.command == "trace":
@@ -118,7 +147,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_label(args.labels, args.store)
         if args.config is not None and len(args.experiments) > 1:
             parser.error("--config takes a single experiment")
-        return cmd_report(args.experiments, args.store, args.config)
+        return cmd_report(args.experiments, args.store, args.config, args.blind)
     except ConfigError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
         return 2
@@ -126,12 +155,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def cmd_run(config_path: Path, store_path: Path, cache_path: Path, env_file: Path) -> int:
     config = load_experiment(config_path)
+    # The guard comes before the store and the cache are opened, so a refusal creates nothing.
+    prereg = check_run(config, config_path, PROJECT_ROOT)
     store = RunStore(store_path)
     cache = ResponseCache(cache_path)
     try:
         runner = ExperimentRunner(
-            config, load_providers(), store, cache, SystemClock(), _environ(env_file)
+            config, load_providers(), store, cache, SystemClock(), _environ(env_file), prereg
         )
+        if prereg is not None:
+            print(f"Registered experiment: validate-rules group A passes; every run carries "
+                  f"prereg_sha256 {prereg[:12]}.")
         pending = runner.pending()
         total = len(runner.specs)
         print(f"Experiment {config.name}: {total} runs, {total - len(pending)} already done, "
@@ -171,6 +205,27 @@ def cmd_run(config_path: Path, store_path: Path, cache_path: Path, env_file: Pat
 def _case_kind(spec: RunSpec) -> str:
     """For the progress lines: benign, or attack:<injection task> for an attacked run."""
     return "benign" if spec.injection_task_id is None else f"attack:{spec.injection_task_id}"
+
+
+def cmd_validate_rules(root: Path, store_path: Path | None) -> int:
+    """Group A, and with a store group B. Exit 1 if any check fails."""
+    checks = run_group_a(root)
+    print("Group A (no store)")
+    print(format_checks(checks))
+    if store_path is not None:
+        if not store_path.exists():
+            print(f"No run store at {store_path}", file=sys.stderr)
+            return 1
+        store = RunStore(store_path)
+        try:
+            group_b = run_group_b(root, store)
+        finally:
+            store.close()
+        print()
+        print("Group B (run store)")
+        print(format_checks(group_b))
+        checks += group_b
+    return 0 if all(c.ok for c in checks) else 1
 
 
 def cmd_budget(model: str | None, store_path: Path) -> int:
@@ -244,19 +299,40 @@ def cmd_trace(run_id: str, store_path: Path) -> int:
                   file=sys.stderr)
             return 1
         record = store.get_run(found[0])
+        scope = blinded_scope(record.spec, load_split_data(PROJECT_ROOT))
+        if scope is not None:
+            state = blinding_state(PROJECT_ROOT, scope)
+            if not state.unblinded:
+                print(f"Run {record.run_id[:12]} is a {scope.replace('_', '-')} run, and its "
+                      f"trace shows its outcome, so it stays blinded (D103): {state.reason}.",
+                      file=sys.stderr)
+                return 1
+            store.log_outcome_view(_now_iso(), "trace", record.run_id, scope, 1)
         print(ascii_safe(trace_text(record, store.get_prefix_divergence(record.run_id))))
         return 0
     finally:
         store.close()
 
 
-def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path | None) -> int:
+def cmd_report(
+    experiments: Sequence[str], store_path: Path, config_path: Path | None, blind: bool = False
+) -> int:
     if not store_path.exists():
         print(f"No run store at {store_path}", file=sys.stderr)
         return 1
     store = RunStore(store_path)
     try:
-        records = [r for experiment in experiments for r in store.runs(experiment)]
+        all_records = [r for experiment in experiments for r in store.runs(experiment)]
+        # Blinding (D103). `--blind` hides every run's outcome; without it, the runs of the 50
+        # test-screen cases, and of the test-confirm cases, are hidden until the freeze log holds
+        # a valid unblinding record for that set.
+        data = load_split_data(PROJECT_ROOT)
+        scope_of_run = {r.run_id: blinded_scope(r.spec, data) for r in all_records}
+        states = {s: blinding_state(PROJECT_ROOT, s) for s in ("test_screen", "test_confirm")}
+        hidden = [r for r in all_records if blind or (
+            (s := scope_of_run[r.run_id]) is not None and not states[s].unblinded)]
+        hidden_ids = {r.run_id for r in hidden}
+        records = [r for r in all_records if r.run_id not in hidden_ids]
         prices = {
             (p.name, model_id): info.price
             for p in load_providers().values()
@@ -264,32 +340,101 @@ def cmd_report(experiments: Sequence[str], store_path: Path, config_path: Path |
         }
         counts = [_expected_runs(experiment, config_path) for experiment in experiments]
         expected = None if None in counts else sum(c for c in counts if c is not None)
-        # Benign utility is computed on benign runs only. An attacked run's utility means
-        # something else (solved under attack), and pooling the two would move the baseline.
-        benign = [r for r in records if r.spec.attack is None]
-        print(report_text(
-            ", ".join(experiments), compute_metrics(benign, prices=prices), len(records), expected,
-            flips=compute_flips(benign),
-            tasks={r.spec.user_task_id for r in benign},
-            pairs={
-                (r.spec.user_task_id, r.spec.injection_task_id)
-                for r in records
-                if r.spec.injection_task_id is not None
-            },
-            notes=known_limit_notes(benign),
-        ))
-        if any(r.spec.topology != "t1" or r.spec.attack is not None for r in records):
-            attacked = [r for r in records if r.spec.attack is not None]
+        if hidden and not records:
+            print(_blind_header(", ".join(experiments), len(all_records), expected))
+        else:
+            _print_outcome_report(experiments, records, len(all_records), expected, prices, store)
+        if hidden:
             print()
-            print(oversight_text(
-                compute_oversight(records),
-                volume={(g.provider, g.model_id, g.topology): g
-                        for g in compute_metrics(attacked, prices=prices)},
-                divergences=check_divergences(store, records),
-            ))
+            why = "--blind" if blind else "; ".join(sorted({
+                f"{s.replace('_', '-')}: {states[s].reason}"
+                for r in hidden if (s := scope_of_run[r.run_id]) is not None
+            }))
+            print(blind_text(hidden, prices, why))
+        for scope in ("test_screen", "test_confirm"):  # blinded outcomes shown: once unblinded
+            shown = sum(scope_of_run[r.run_id] == scope for r in records)
+            if shown:
+                store.log_outcome_view(_now_iso(), "report", ", ".join(experiments), scope, shown)
         return 0
     finally:
         store.close()
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _print_outcome_report(
+    experiments: Sequence[str],
+    records: list[RunRecord],
+    stored: int,
+    expected: int | None,
+    prices: Mapping[tuple[str, str], Price],
+    store: RunStore,
+) -> None:
+    # Benign utility is computed on benign runs only. An attacked run's utility means
+    # something else (solved under attack), and pooling the two would move the baseline.
+    benign = [r for r in records if r.spec.attack is None]
+    print(report_text(
+        ", ".join(experiments), compute_metrics(benign, prices=prices), stored, expected,
+        flips=compute_flips(benign),
+        tasks={r.spec.user_task_id for r in benign},
+        pairs={
+            (r.spec.user_task_id, r.spec.injection_task_id)
+            for r in records
+            if r.spec.injection_task_id is not None
+        },
+        notes=known_limit_notes(benign),
+    ))
+    if any(r.spec.topology != "t1" or r.spec.attack is not None for r in records):
+        attacked = [r for r in records if r.spec.attack is not None]
+        print()
+        print(oversight_text(
+            compute_oversight(records),
+            volume={(g.provider, g.model_id, g.topology): g
+                    for g in compute_metrics(attacked, prices=prices)},
+            divergences=check_divergences(store, records),
+        ))
+
+
+def _blind_header(experiment: str, stored: int, expected: int | None) -> str:
+    lines = [f"Experiment: {experiment}"]
+    lines.append(f"Runs stored: {stored}" if expected is None
+                 else f"Runs stored: {stored} of {expected} ({expected - stored} pending)")
+    return "\n".join(lines)
+
+
+def blind_text(runs: Sequence[RunRecord], prices: Mapping[tuple[str, str], Price],
+               reason: str) -> str:
+    """What may be read while outcomes are blinded (D103): per model and topology, the number of
+    runs, the errors, the calls, tokens, cost and latency. No outcome, no rate built from one,
+    and nothing about what a run did (markers, propagation, gate decisions)."""
+    lines = [
+        f"Blinded (D103): {len(runs)} run(s). Counts, errors, tokens and cost only.",
+        f"  why: {reason}",
+    ]
+    for attacked in (True, False):
+        subset = [r for r in runs if (r.spec.attack is not None) == attacked]
+        for g in compute_metrics(subset, prices=prices):
+            n = sum(g.outcomes.values())
+            errors = ", ".join(f"{k} {v}" for k, v in g.model_errors.items()) or "none"
+            lines += [
+                "",
+                f"{g.provider}/{g.model_id}  topology {g.topology}  "
+                f"{'attack runs' if attacked else 'benign controls'}",
+                f"  runs stored            {n}",
+                f"  model errors           {g.model_error_total}: {errors}",
+                f"  calls                  {g.calls} ({g.cached_calls} from cache), "
+                f"{g.requests_sent} provider requests",
+                f"  tokens                 input {_fmt_int(g.input_tokens)}, output "
+                f"{_fmt_int(g.output_tokens)} (reasoning {_fmt_reasoning(g)})",
+                f"  est. cost              {_fmt_cost(g.cost_usd)} at public paid prices",
+                *_usage_lines(g, "  "),
+                f"  latency / call         {_fmt_latency(g.call_latency)}",
+                f"  latency / task         {_fmt_latency(g.task_latency)}",
+                f"  run dates (UTC)        {g.first_run_at} to {g.last_run_at}",
+            ]
+    return "\n".join(lines)
 
 
 def known_limit_notes(benign: Sequence[RunRecord]) -> dict[tuple[str, str, str], list[str]]:
