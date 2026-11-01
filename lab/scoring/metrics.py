@@ -107,6 +107,8 @@ class GroupMetrics:
     runs_with_invalid_argument_tool_calls: int
     unparsed_tool_calls: int
     runs_with_unparsed_tool_calls: int
+    output_parse_failed_calls: int
+    runs_with_output_parse_failed_calls: int
     calls: int
     cached_calls: int
     requests_sent: int  # real provider requests, retries included
@@ -210,6 +212,10 @@ def _group(
         unparsed_tool_calls=sum(c.unparsed_tool_calls for c in calls),
         runs_with_unparsed_tool_calls=sum(
             any(c.unparsed_tool_calls for c in run.calls) for run in runs
+        ),
+        output_parse_failed_calls=sum(c.output_parse_failed_calls for c in calls),
+        runs_with_output_parse_failed_calls=sum(
+            any(c.output_parse_failed_calls for c in run.calls) for run in runs
         ),
         calls=len(calls),
         cached_calls=sum(c.cached for c in calls),

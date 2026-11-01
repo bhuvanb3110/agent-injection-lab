@@ -220,7 +220,11 @@ def case_mean(cases: Sequence[Sequence[bool]], *, resamples: int = BOOTSTRAP_RES
 # --- per group ---
 
 
-Case = tuple[str, str | None]  # (user task, injection task or None)
+# (user task, injection task or None, case ID or None). A run built from a dataset case is its
+# case: two cases on one (user task, injection task) pair are two cases, each with its own
+# repeats (PLAN_M3 step 10, D117). A run without a case ID (a benign control, or milestone 2's
+# attack runs) is grouped as before, by its pair.
+Case = tuple[str, str | None, str | None]
 
 
 @dataclass(frozen=True)
@@ -321,7 +325,9 @@ def _group(
 ) -> OversightMetrics:
     by_case: dict[Case, list[RunRecord]] = {}
     for r in sorted(runs, key=lambda r: r.spec.repeat_idx):
-        by_case.setdefault((r.spec.user_task_id, r.spec.injection_task_id), []).append(r)
+        by_case.setdefault(
+            (r.spec.user_task_id, r.spec.injection_task_id, r.spec.case_id), []
+        ).append(r)
     cases = sorted(by_case)
     searched = [r for r in runs if r.propagated is not None]
 

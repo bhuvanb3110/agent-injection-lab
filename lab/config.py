@@ -19,6 +19,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from lab.attacks.agentdojo import ATTACK_NAME
+from lab.attacks.case_set import CaseSet, committed_case_set
+from lab.attacks.cases import AttackCase
 from lab.domains.agentdojo_bridge import (
     BANKING_SUITE_NAME,
     BENCHMARK_VERSION,
@@ -57,7 +59,7 @@ class AttackConfig(_Strict):
 
 # Config fields added after milestone 1, with the value that means "not used". At that value a
 # field is left out of the config hash, so every milestone-1 config keeps its hash (D48).
-_ADDED_FIELDS = {"topologies": None, "attack": None, "include_benign": True}
+_ADDED_FIELDS = {"topologies": None, "attack": None, "include_benign": True, "cases": None}
 
 
 class ExperimentConfig(_Strict):
@@ -77,6 +79,11 @@ class ExperimentConfig(_Strict):
     max_tokens: int = Field(ge=1)  # sent on every call (D28)
     attack: AttackConfig | None = None
     include_benign: bool = True  # with an attack: also run each user task without injections
+    # Added in milestone 3: the attack cases to run (PLAN_M3 step 2), as the name of a set or a
+    # list of case IDs (the step-8 dev configs). None keeps the milestone-2 behaviour, where
+    # `attack` and the task lists decide the cases. Only a list of dev case IDs can be expanded
+    # so far (see `expand`); the task lists are then unused.
+    cases: str | list[str] | None = None
 
     @model_validator(mode="after")
     def _one_way_to_name_the_topology(self) -> ExperimentConfig:
@@ -86,7 +93,9 @@ class ExperimentConfig(_Strict):
             not self.topologies or len(set(self.topologies)) != len(self.topologies)
         ):
             raise ValueError("`topologies` must be a non-empty list of distinct topologies")
-        if self.attack is None and not self.include_benign:
+        if self.cases is not None and not self.cases:
+            raise ValueError("`cases` must name a set or list at least one case")
+        if self.attack is None and self.cases is None and not self.include_benign:
             raise ValueError("include_benign: false with no attack leaves nothing to run")
         return self
 
@@ -147,27 +156,69 @@ def model_info(ref: ModelRef, providers: dict[str, ProviderConfig]) -> ModelInfo
     return info
 
 
-def expand(config: ExperimentConfig, providers: dict[str, ProviderConfig]) -> list[RunSpec]:
+def listed_cases(config: ExperimentConfig, case_set: CaseSet) -> list[AttackCase]:
+    """The attack cases a `cases:` list names, in list order.
+
+    Which split a case is in is not decided here. A list with test-split cases is expanded like
+    any other; `lab run` refuses it unless `validate-rules` group A passes (lab.rules.guard,
+    D102, D117). Unknown and repeated IDs are errors: a repeated one would make two identical
+    run IDs, and the second would be silently skipped.
+    """
+    ids = config.cases
+    if not isinstance(ids, list):
+        raise ValueError(
+            f"cases: {ids!r}: naming a set of cases is not built yet; give a list of case IDs"
+        )
+    if config.attack is not None:
+        raise ValueError("give `cases` or `attack`, not both")
+    if config.include_benign:
+        # A case list runs attack cases only. Say so, rather than let the default hide that no
+        # benign control is run.
+        raise ValueError("`cases` runs attack cases only; set `include_benign: false`")
+    unknown = [i for i in ids if i not in case_set.cases]
+    if unknown:
+        raise ValueError(f"Unknown attack cases: {unknown}")
+    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    if repeated:
+        raise ValueError(f"Attack cases listed more than once: {repeated}")
+    return [case_set.cases[i] for i in ids]
+
+
+def expand(
+    config: ExperimentConfig,
+    providers: dict[str, ProviderConfig],
+    case_set: CaseSet | None = None,
+    prereg_sha256: str | None = None,
+) -> list[RunSpec]:
     """One RunSpec per (repeat, case, model, topology).
 
     A case is a user task run benign, or run with one injection task. Within a user task the
-    benign control comes first, then its attacked cases in injection task order.
+    benign control comes first, then its attacked cases in injection task order. With a `cases:`
+    list a case is an attack case of the dataset (`case_set`, by default the committed one), and
+    the order is the list's.
+
+    `prereg_sha256` is stamped on every spec (None for a run made outside the preregistration).
 
     Models are interleaved, so when one model hits its daily cap, every model has made the same
     progress through the case list and a partial day still gives a paired comparison. The
     topologies of one case and model run together for the same reason.
     """
     infos = [(ref, model_info(ref, providers)) for ref in config.models]
-    cases: list[tuple[str, str | None]] = []  # (user task, injection task or None)
-    for task_id in config.task_ids():
-        if config.attack is None or config.include_benign:
-            cases.append((task_id, None))
-        if config.attack is not None:
-            cases += [(task_id, inj) for inj in config.attack.task_ids()]
+    # (user task, injection task or None, the attack case if the config lists cases)
+    cases: list[tuple[str, str | None, AttackCase | None]] = []
+    if config.cases is not None:
+        listed = listed_cases(config, case_set or committed_case_set(config.suite))
+        cases = [(c.user_task_id, c.injection_task_id, c) for c in listed]
+    else:
+        for task_id in config.task_ids():
+            if config.attack is None or config.include_benign:
+                cases.append((task_id, None, None))
+            if config.attack is not None:
+                cases += [(task_id, inj, None) for inj in config.attack.task_ids()]
     attack_name = config.attack.name if config.attack is not None else None
     specs = []
     for repeat_idx in config.repeat_indices():
-        for task_id, injection_task_id in cases:
+        for task_id, injection_task_id, attack_case in cases:
             for ref, info in infos:
                 if info.sampling is None:
                     raise ValueError(f"{ref.provider}/{ref.model_id} has no sampling settings")
@@ -186,8 +237,14 @@ def expand(config: ExperimentConfig, providers: dict[str, ProviderConfig]) -> li
                             max_tokens=config.max_tokens,
                             seed=config.seed + repeat_idx,
                             repeat_idx=repeat_idx,
-                            attack=attack_name if injection_task_id is not None else None,
+                            # For a case, the attack is its technique (M3 step 8).
+                            attack=(
+                                attack_case.technique if attack_case is not None
+                                else attack_name if injection_task_id is not None else None
+                            ),
                             injection_task_id=injection_task_id,
+                            case_id=attack_case.id if attack_case is not None else None,
+                            prereg_sha256=prereg_sha256,
                         )
                     )
     return specs

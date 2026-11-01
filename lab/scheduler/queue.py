@@ -190,6 +190,7 @@ class Scheduler:
             # Every agent's trace, model errors included: LabLLM kept it in the context (D30).
             "events": list(ctx.events),
             **_marker_fields(ctx),
+            **_case_fields(ctx),
         }
         if result is not None:
             return RunRecord(
@@ -237,6 +238,18 @@ def _final_state_fields(ctx: RunContext) -> dict[str, Any]:
         "final_environment": ctx.final_environment,
         "attacker_effect": ctx.attacker_effect,
         "attacker_effect_source": None if ctx.attacker_effect is None else FROM_FINAL_ENVIRONMENT,
+    }
+
+
+def _case_fields(ctx: RunContext) -> dict[str, Any]:
+    """The stratifying fields of the attack case the runner built the run from, if any."""
+    if ctx.case_fields is None:
+        return {}
+    return {
+        "technique": ctx.case_fields.technique,
+        "channel": ctx.case_fields.channel,
+        "goal": ctx.case_fields.goal,
+        "t2_stratum": ctx.case_fields.t2_stratum,
     }
 
 

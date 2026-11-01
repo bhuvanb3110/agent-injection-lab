@@ -2,7 +2,7 @@
 
 Research harness measuring whether layers of multi-agent oversight make tool-using agents safer against prompt injection, or just add more places for attacks to enter. The full spec is `docs/BRIEF.md`. Read the sections relevant to the current task before writing code.
 
-**Current milestone: 3** (BRIEF §10; milestone 2, topologies + tracing, is done: plan in `docs/PLAN_M2.md`, decisions D51–D89). Scope for milestones 1–4: AgentDojo **Banking** suite only.
+**Current milestone: 4** (BRIEF §10; milestones 1–3 are done: milestone 2 in `docs/PLAN_M2.md`, decisions D51–D89; milestone 3 in `docs/PLAN_M3.md`, decisions D90–D118, gated by `PREREGISTRATION.md`). Scope for milestones 1–4: AgentDojo **Banking** suite only.
 
 ## How we work
 
@@ -39,12 +39,23 @@ Keep this list current as commands are added.
 - `uv run lab run configs/experiments/smoke_topologies.yaml` (FakeModels, T1 to T5-summary, benign + attack; also run in CI by `tests/test_smoke_topologies.py`)
 - `uv run lab run configs/experiments/m2_exit_v2.yaml` (M2 exit check: real Groq calls, both models, 3 repeats; resumable; run only when Bhuvan says so. Superseded by `m2_exit_v3.yaml` (D82). Supersedes `m2_exit.yaml`, which stopped at 41/72 before D76, D78)
 - `uv run lab run configs/experiments/m2_exit_v3.yaml` (M2 exit check, third attempt: v2 finished 72/72 but 3 runs ended on Groq `tool_use_failed`, D82. Same cells as v2; real Groq calls; resumable; run only when Bhuvan says so. Supersedes `m2_exit_v2.yaml`; don't pool them)
+- `uv run python -m lab.attacks.dataset banking [--check]` (writes the attack dataset, split and subsets in `data/attack_cases/` from `banking_composition.yaml`; `--check` regenerates and compares bytes, no model calls; D112)
+- `configs/experiments/step8_20b_j.yaml`, `step8_20b_c.yaml`, `step8_120b.yaml` (M3 step-8 dev runs, D105, D113–D115: case lists, dev cases only, run with `uv run lab run configs/experiments/<name>.yaml`; the runner refuses any case outside the dev split and places every listed case before the first call. Real Groq calls, resumable; run only when Bhuvan says so, in the order J, C, 120b. D114's two defects are fixed by D115)
 - `uv run lab budget [--model <provider/model_id or model_id>]` (per model: tokens and requests used in the last 24 h and left, and when the next 50,000 tokens free up; reads the run store, makes no model calls)
 - `uv run lab trace <run_id or unique prefix>` (one run's multi-agent trace: every agent, handoff and marker hop)
-- `uv run lab report <experiment> [<experiment> ...]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab report <experiment> [<experiment> ...] [--blind]` (e.g. `smoke`, `baseline_banking`; several are pooled and per-task flips across repeats are shown, e.g. `baseline_banking baseline_banking_repeats`)
+- `uv run lab validate-rules [--store results/runs.sqlite] [--root <dir>]` (group A: pins, dataset, split, regeneration, golden fixtures; no store, run in CI. With `--store`, group B against the run store, local only. Exit 1 on any failure; D102, D117). `lab run` runs group A first for any experiment with test-split cases (and for pinned benign controls) and refuses it if A fails, so test cases stay refused until step 11 writes PREREGISTRATION.md. `lab run` also refuses test-confirm cases until the freeze log (a hash chain, `FREEZE_LOG.yaml`) holds a valid M6 confirmation entry. `lab report` hides test-screen and test-confirm outcomes until the matching unblinding entry; `--blind` hides every outcome. `prereg_sha256` is recorded on runs, never in the run ID. File formats: `docs/PREREG_FORMAT.md`
 - `uv run lab derive-attacker-effect <experiment>` (fills `attacker_effect` for attack runs stored before final environments were kept, from their executed writes; marked `derived_from_trace`; no model calls; D86)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
-- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only); `label` and `trace` take `--store`
+- `configs/experiments/m4_topology_20b.yaml`, `m4_benign_20b.yaml`, `m4_topology_120b.yaml`, `m4_benign_120b.yaml`, then `m4_topology_20b_repeats.yaml` and `m4_topology_120b_repeats.yaml` (M4 sweep, PREREGISTRATION §4; real Groq calls; resumable; run only when Bhuvan says so, in that order. Test-screen cases only in the topology sweep, and their outcomes stay blind under `lab report --blind` until unblinded. Run as `uv run lab run configs/experiments/<name>.yaml`)
+- Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only), `--blind`; `label` and `trace` take `--store`
+
+## Preregistration rules
+
+- `PREREGISTRATION.md` and every file in its pin block are frozen. Changing one is an amendment: a dated entry in `DECISIONS.md`, a commit, and only then a run. Never edit a pinned file in place to make a check pass.
+- **Operating rule:** after an amendment is committed, rerun `lab run` (or the guard check) before the next run starts (PREREGISTRATION §12, B4). An amendment that changes what runs must not be followed by a run on the old state.
+- `FREEZE_LOG.yaml` and `PREREGISTRATION.md` history is never rewritten or force-pushed. Their git history is the record. Fix a mistake with a new commit, never with a rebase, amend or force push.
+- Run `uv run lab validate-rules` (group A must pass 12 of 12) before any commit that touches configs, data or the preregistration.
 
 ## Handoff summary
 

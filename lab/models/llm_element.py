@@ -24,7 +24,7 @@ the run as ModelError "truncated" (D29).
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
@@ -47,11 +47,20 @@ from agentdojo.types import (
 
 from lab.errors import ModelError
 from lab.models.cache import request_key
-from lab.models.client import ChatClient
+from lab.models.client import OUTPUT_PARSE_FAILED, ChatClient
 from lab.models.providers import ReasoningEffort
 from lab.models.types import CallRecord, ModelRequest, ModelResponse, RunContext
 from lab.scheduler.limits import estimate_tokens
-from lab.tracing.events import SINGLE_AGENT, SINGLE_ROLE, TOOLS, USER, TraceEvent, message_event
+from lab.tracing.events import (
+    SINGLE_AGENT,
+    SINGLE_ROLE,
+    TOOLS,
+    USER,
+    TraceEvent,
+    message_event,
+    tool_schema_event,
+)
+from lab.tracing.markers import normalise
 
 
 class MalformedToolCall(FunctionCall):
@@ -86,8 +95,9 @@ class RejectedToolCall(FunctionCall):
     (D82). It is never executed.
 
     `rejection` is "invalid_arguments" (the arguments are JSON but fail the tool's schema; `args`
-    holds them) or "unparsed" (the generation could not be read; `raw_arguments` holds all of it
-    and `args` is empty). `detail` is Groq's message. The markers search both fields.
+    holds them), "unparsed" (the generation could not be read; `raw_arguments` holds all of it
+    and `args` is empty) or "output_parse_failed" (Groq's other 400, D116: stored like unparsed,
+    `raw_arguments` often empty). `detail` is Groq's message. The markers search both fields.
     """
 
     rejection: str
@@ -184,7 +194,7 @@ class LabLLM(BasePipelineElement):
         request = self._request(messages, runtime, ctx)
         # Keep the transcript and the trace in the context, so a run that ends in ModelError
         # still has both, up to and including what this call was sent.
-        self._record_new_messages(ctx, messages)
+        self._record_new_messages(ctx, messages, runtime)
         ctx.transcripts[self.agent_id] = list(messages)
         assistant = self._call(request, ctx)
         transcript = [*messages, assistant]
@@ -238,6 +248,8 @@ class LabLLM(BasePipelineElement):
                       for c in calls)
         unparsed = sum(isinstance(c, RejectedToolCall) and c.rejection == "unparsed"
                        for c in calls)
+        parse_failed = sum(isinstance(c, RejectedToolCall) and c.rejection == OUTPUT_PARSE_FAILED
+                           for c in calls)
         rejected = sum(1 for raw in response.tool_calls if raw.out_of_scope or raw.rejection)
         estimate = None
         if response.input_tokens is None or response.output_tokens is None:
@@ -260,6 +272,7 @@ class LabLLM(BasePipelineElement):
                 out_of_scope_tool_calls=out_of_scope,
                 invalid_argument_tool_calls=invalid,
                 unparsed_tool_calls=unparsed,
+                output_parse_failed_calls=parse_failed,
                 rejected_tool_calls=rejected,
                 estimated_input_tokens=estimate.input_tokens if estimate else None,
                 estimated_output_tokens=estimate.output_tokens if estimate else None,
@@ -292,9 +305,13 @@ class LabLLM(BasePipelineElement):
                 subtype="rejected_tool_calls",
             )
 
-    def _record_new_messages(self, ctx: RunContext, messages: Sequence[ChatMessage]) -> None:
+    def _record_new_messages(
+        self, ctx: RunContext, messages: Sequence[ChatMessage], runtime: FunctionsRuntime
+    ) -> None:
         """Add a trace event for each message this agent hasn't been sent before: the system
-        prompt and request on the first call, then the tool results since its last reply."""
+        prompt and request on the first call, then the tool results since its last reply. On the
+        first call also one `tool_schema` event for each of its tools whose description carries
+        an injected payload (D94): its schemas are sent with every call, but arrive once."""
         seen = ctx.transcripts.get(self.agent_id, [])
         if list(messages[: len(seen)]) != seen:
             # The trace assumes transcripts only grow. A pipeline that rewrites one is a bug.
@@ -304,14 +321,28 @@ class LabLLM(BasePipelineElement):
             if message["role"] == "tool" and message["tool_call_id"] is not None:
                 # A result a gate wrote in place of the tools' (a blocked call).
                 sender = ctx.tool_result_senders.get((self.agent_id, message["tool_call_id"]))
-            ctx.events.append(self._event(len(ctx.events), message, None, sender=sender))
+            declared: tuple[str, ...] = ()
+            if message["role"] == "tool" and sender is None:
+                declared = declared_in_result(message, ctx.result_declarations)
+            ctx.events.append(
+                self._event(len(ctx.events), message, None, sender=sender, declared=declared)
+            )
+        if self.agent_id not in ctx.transcripts:
+            for name, injection in ctx.schema_injections.items():
+                if name in runtime.functions:
+                    ctx.events.append(tool_schema_event(
+                        len(ctx.events), self.agent_id, self.agent_role, name, injection.text,
+                        list(injection.declared),
+                    ))
 
     def _event(
-        self, seq: int, message: ChatMessage, call_idx: int | None, *, sender: str | None = None
+        self, seq: int, message: ChatMessage, call_idx: int | None, *,
+        sender: str | None = None, declared: Sequence[str] = (),
     ) -> TraceEvent:
         return message_event(
             seq, self.agent_id, self.agent_role, message, call_idx,
             principal=self.principal, tool_target=self.tool_target, sender=sender,
+            declared=declared,
         )
 
 
@@ -381,6 +412,11 @@ def rejected_call_result(call: RejectedToolCall) -> ChatToolResultMessage:
             f"ValidationError: {call.detail}. The tool was not run. Call `{call.function}` "
             "again with arguments that match its schema."
         )
+    elif call.rejection == OUTPUT_PARSE_FAILED:
+        # Groq's message only: the failed generation may be empty, and is never echoed back (D116).
+        error = "Your last response was rejected and no tool was run."
+        if call.detail:
+            error += f" {call.detail}"
     else:
         error = (
             "Your last tool call was rejected as invalid and was not run. Call one of your "
@@ -407,6 +443,25 @@ def malformed_call_result(call: MalformedToolCall) -> ChatToolResultMessage:
             f"arguments. Arguments received: {call.raw_arguments}"
         ),
     )
+
+
+def declared_in_result(
+    message: ChatMessage, declarations: Mapping[str, tuple[str, ...]]
+) -> tuple[str, ...]:
+    """The goal markers declared by payloads that this tool result delivers (D111).
+
+    A payload is in the result if its canary is: the canary is plain text in every payload
+    (D95) and unique to its vector (D50), so it identifies the delivery however the payload's
+    goal is encoded. Matched with `normalise`, as the marker search is.
+    """
+    if not declarations:
+        return ()
+    text = normalise(_text(message["content"]) or "")
+    found: dict[str, None] = {}
+    for canary, markers in declarations.items():
+        if normalise(canary) in text:
+            found.update(dict.fromkeys(markers))
+    return tuple(found)
 
 
 # --- AgentDojo messages -> OpenAI format ---------------------------------------------------
@@ -486,8 +541,8 @@ def response_to_assistant_message(response: ModelResponse) -> ChatAssistantMessa
                 # The client only builds these from a JSON object (client.py:out_of_scope_call).
                 raise ValueError(f"Out-of-scope call {raw.name!r} has arguments that aren't one")
             tool_calls.append(OutOfScopeToolCall(function=raw.name, args=args, id=raw.id))
-        elif raw.rejection in ("invalid_arguments", "unparsed"):
-            unparsed = raw.rejection == "unparsed"
+        elif raw.rejection in ("invalid_arguments", "unparsed", OUTPUT_PARSE_FAILED):
+            unparsed = raw.rejection != "invalid_arguments"
             tool_calls.append(
                 RejectedToolCall(
                     function=raw.name,

@@ -121,10 +121,16 @@ def _body(e: TraceEvent) -> list[str]:
                 scope = "  INVALID ARGUMENTS (rejected by Groq), not run"
             elif call.get("rejection") == "unparsed":
                 scope = "  UNPARSED (rejected by Groq), not run"
+            elif call.get("rejection") == "output_parse_failed":
+                scope = "  OUTPUT PARSE FAILED (rejected by Groq), not run"
             out.append(f"call {call['function']}({args})  id {call.get('id')}{scope}")
         if p.get("error"):
             out += _text_lines("error", p["error"])
         return out or [f"{p['role']}: (no text)"]
+    if e.kind == "tool_schema":
+        return [f"tool {p['tool']}: injected description",
+                *_text_lines("injected", p["injected"]),
+                *([f"declared markers {json.dumps(p['declared'])}"] if p["declared"] else [])]
     if e.kind == "delegation":
         return _text_lines(f"instruction to {p['worker']}", p["instruction"])
     if e.kind == "result":

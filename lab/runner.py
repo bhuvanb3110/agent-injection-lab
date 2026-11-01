@@ -16,12 +16,16 @@ from dataclasses import dataclass
 
 from lab import provenance
 from lab.attacks.agentdojo import build_injections, markers_for
+from lab.attacks.case_plan import plan_case
+from lab.attacks.case_set import CaseSet, committed_case_set
 from lab.config import ExperimentConfig, ModelRef, expand, model_info
 from lab.domains.agentdojo_bridge import CaseResult, load_banking_suite, run_case
+from lab.domains.agentdojo_bridge.run_case import with_injected_descriptions
 from lab.domains.agentdojo_bridge.scripted import (
     scripted_reviewers,
     scripted_summaries,
     scripts_by_request,
+    scripts_for_case,
 )
 from lab.models.cache import CachingClient, ResponseCache
 from lab.models.client import ChatClient, OpenAICompatClient
@@ -63,13 +67,20 @@ class ExperimentRunner:
         cache: ResponseCache,
         clock: Clock,
         environ: Mapping[str, str],
+        prereg_sha256: str | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.cache = cache
         self.clock = clock
-        self.specs = expand(config, providers)
+        # Only a config that lists attack cases reads the dataset.
+        self.case_set: CaseSet | None = (
+            committed_case_set(config.suite) if config.cases is not None else None
+        )
+        self.specs = expand(config, providers, self.case_set, prereg_sha256)
         self.suite = load_banking_suite()
+        if self.case_set is not None:
+            self.check_cases_load()
         self.limiters: dict[str, RateLimiter] = {}
         self.clients: dict[str, ChatClient] = {}  # real providers only, one per provider
         self.model_infos: dict[str, ModelInfo] = {}
@@ -91,6 +102,25 @@ class ExperimentRunner:
                 self.clients[ref.provider] = OpenAICompatClient(
                     providers[ref.provider], environ=environ
                 )
+
+    def check_cases_load(self) -> None:
+        """Place every listed case in a fresh environment now, so a payload that cannot be put
+        there stops the experiment before its first run, naming the case. AgentDojo writes an
+        injection into a YAML text, and a payload that breaks the YAML (a line starting with
+        `---`, say) would otherwise raise in the middle of the queue. No model is called."""
+        assert self.case_set is not None
+        for case_id in dict.fromkeys(s.case_id for s in self.specs if s.case_id):
+            plan = plan_case(
+                self.suite, self.case_set.cases[case_id], self.case_set.split_of[case_id]
+            )
+            try:
+                self.suite.load_and_inject_default_environment(plan.injections)
+                with_injected_descriptions(self.suite.tools, plan.tool_descriptions)
+            except Exception as error:
+                raise ValueError(
+                    f"{case_id}: its payload cannot be placed ({type(error).__name__}: "
+                    f"{str(error).splitlines()[0]}). Nothing was run."
+                ) from error
 
     def provenance(self) -> Provenance:
         return Provenance(
@@ -114,19 +144,35 @@ class ExperimentRunner:
         task = self.suite.get_user_task_by_id(spec.user_task_id)
         injection_task = None
         injections = None
-        if spec.attack is not None and spec.injection_task_id is not None:
+        case_run = None
+        if spec.case_id is not None:
+            # A run of a `cases:` list: payloads, markers and the success check come from the case.
+            assert self.case_set is not None  # expand() only gives a case_id when it was set
+            case = self.case_set.cases[spec.case_id]
+            case_run = plan_case(self.suite, case, self.case_set.split_of[spec.case_id])
+            injection_task, injections = case_run.injection_task, case_run.injections
+            ctx.markers = case_run.markers
+            ctx.case_fields = case_run.fields
+        elif spec.attack is not None and spec.injection_task_id is not None:
             injection_task = self.suite.get_injection_task_by_id(spec.injection_task_id)
             injections = build_injections(self.suite, spec.attack, task, injection_task)
-        ctx.markers = markers_for(
-            spec.attack, spec.injection_task_id, spec.user_task_id, injections or {}
-        )
+        if case_run is None:
+            ctx.markers = markers_for(
+                spec.attack, spec.injection_task_id, spec.user_task_id, injections or {}
+            )
         inner: ChatClient
         if spec.provider == FAKE_PROVIDER:
             # Keyed by request, not popped in call order, so cache hits can't skew it (D54).
             # Reviewers (T3) are recognised by their system prompt, T5-summary's side calls by
             # their last message.
+            scripts = (
+                scripts_for_case(spec.model_id, self.suite, task, case_run, spec.topology)
+                if case_run is not None else scripts_by_request(
+                    spec.model_id, self.suite, task, injection_task, spec.topology
+                )
+            )
             inner = ScriptedModel(
-                scripts_by_request(spec.model_id, self.suite, task, injection_task, spec.topology),
+                scripts,
                 by_system=scripted_reviewers(spec.model_id),
                 side=scripted_summaries(spec.model_id),
             )
@@ -160,6 +206,9 @@ class ExperimentRunner:
             ctx,
             injections=injections,
             injection_task=injection_task,
+            tool_descriptions=case_run.tool_descriptions if case_run else None,
+            result_declarations=case_run.result_declarations if case_run else None,
+            attack_check=case_run.attack_check if case_run else None,
         )
 
     def run(self, progress: ProgressFn | None = None) -> SchedulerReport:
