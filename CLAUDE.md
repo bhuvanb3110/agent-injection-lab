@@ -2,7 +2,7 @@
 
 Research harness measuring whether layers of multi-agent oversight make tool-using agents safer against prompt injection, or just add more places for attacks to enter. The full spec is `docs/BRIEF.md`. Read the sections relevant to the current task before writing code.
 
-**Current milestone: 3** (BRIEF §10; milestone 2, topologies + tracing, is done: plan in `docs/PLAN_M2.md`, decisions D51–D89). Scope for milestones 1–4: AgentDojo **Banking** suite only.
+**Current milestone: 4** (BRIEF §10; milestones 1–3 are done: milestone 2 in `docs/PLAN_M2.md`, decisions D51–D89; milestone 3 in `docs/PLAN_M3.md`, decisions D90–D118, gated by `PREREGISTRATION.md`). Scope for milestones 1–4: AgentDojo **Banking** suite only.
 
 ## How we work
 
@@ -47,7 +47,15 @@ Keep this list current as commands are added.
 - `uv run lab validate-rules [--store results/runs.sqlite] [--root <dir>]` (group A: pins, dataset, split, regeneration, golden fixtures; no store, run in CI. With `--store`, group B against the run store, local only. Exit 1 on any failure; D102, D117). `lab run` runs group A first for any experiment with test-split cases (and for pinned benign controls) and refuses it if A fails, so test cases stay refused until step 11 writes PREREGISTRATION.md. `lab run` also refuses test-confirm cases until the freeze log (a hash chain, `FREEZE_LOG.yaml`) holds a valid M6 confirmation entry. `lab report` hides test-screen and test-confirm outcomes until the matching unblinding entry; `--blind` hides every outcome. `prereg_sha256` is recorded on runs, never in the run ID. File formats: `docs/PREREG_FORMAT.md`
 - `uv run lab derive-attacker-effect <experiment>` (fills `attacker_effect` for attack runs stored before final environments were kept, from their executed writes; marked `derived_from_trace`; no model calls; D86)
 - `uv run lab label configs/labels/<experiment>.yaml` (writes hand failure labels into the store)
+- `configs/experiments/m4_topology_20b.yaml`, `m4_benign_20b.yaml`, `m4_topology_120b.yaml`, `m4_benign_120b.yaml`, then `m4_topology_20b_repeats.yaml` and `m4_topology_120b_repeats.yaml` (M4 sweep, PREREGISTRATION §4; real Groq calls; resumable; run only when Bhuvan says so, in that order. Test-screen cases only in the topology sweep, and their outcomes stay blind under `lab report --blind` until unblinded. Run as `uv run lab run configs/experiments/<name>.yaml`)
 - Options: `run` takes `--store` (default `results/runs.sqlite`), `--cache` (default `cache/responses.sqlite`), `--env-file` (default `.env`); `report` takes `--store`, `--config` (single experiment only), `--blind`; `label` and `trace` take `--store`
+
+## Preregistration rules
+
+- `PREREGISTRATION.md` and every file in its pin block are frozen. Changing one is an amendment: a dated entry in `DECISIONS.md`, a commit, and only then a run. Never edit a pinned file in place to make a check pass.
+- **Operating rule:** after an amendment is committed, rerun `lab run` (or the guard check) before the next run starts (PREREGISTRATION §12, B4). An amendment that changes what runs must not be followed by a run on the old state.
+- `FREEZE_LOG.yaml` and `PREREGISTRATION.md` history is never rewritten or force-pushed. Their git history is the record. Fix a mistake with a new commit, never with a rebase, amend or force push.
+- Run `uv run lab validate-rules` (group A must pass 12 of 12) before any commit that touches configs, data or the preregistration.
 
 ## Handoff summary
 
